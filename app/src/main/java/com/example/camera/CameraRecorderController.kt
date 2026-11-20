@@ -192,10 +192,12 @@ class CameraRecorderController(context: Context) {
             CamcorderProfile.QUALITY_720P to Quality.HD,
             CamcorderProfile.QUALITY_480P to Quality.SD,
             CamcorderProfile.QUALITY_2160P to Quality.UHD,
+            CamcorderProfile.QUALITY_HIGH to Quality.HIGHEST,
+            CamcorderProfile.QUALITY_LOW to Quality.LOWEST,
         )
         val supported = mutableListOf<Quality>()
         for ((profileId, quality) in candidates) {
-            if (hasEncoderProfile(cameraId, profileId)) {
+            if (hasEncoderProfile(cameraId, profileId) && quality !in supported) {
                 supported.add(quality)
             }
         }
