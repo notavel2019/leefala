@@ -3,6 +3,11 @@ name: Build Debug APK
 on:
   workflow_dispatch:
   push:
+    tags-ignore:
+      - '*'
+
+permissions:
+  contents: write
 
 jobs:
   build:
@@ -29,7 +34,13 @@ jobs:
         with:
           gradle-version: 9.3.1
 
-      - name: Gerar debug.keystore de teste
+      - name: Restaurar assinatura consistente de teste (permite atualizar sem desinstalar)
+        uses: actions/cache@v4
+        with:
+          path: debug.keystore
+          key: escuta-grava-debug-keystore-v1
+
+      - name: Garantir debug.keystore
         run: |
           if [ ! -f debug.keystore ]; then
             keytool -genkeypair -v -keystore debug.keystore \
@@ -38,11 +49,31 @@ jobs:
               -dname "CN=Android Debug,O=Android,C=US"
           fi
 
-      - name: Compilar APK de teste
-        run: gradle :app:assembleDebug --no-daemon
+      - name: Compilar APK de teste (versão automática)
+        run: |
+          VERSION_CODE=$(( ${{ github.run_number }} + 1 ))
+          VERSION_NAME="1.0.${{ github.run_number }}"
+          echo "VERSION_CODE=$VERSION_CODE" >> $GITHUB_ENV
+          echo "VERSION_NAME=$VERSION_NAME" >> $GITHUB_ENV
+          gradle :app:assembleDebug --no-daemon \
+            -PappVersionCode="$VERSION_CODE" \
+            -PappVersionName="$VERSION_NAME"
+          cp app/build/outputs/apk/debug/app-debug.apk EscutaEGrava.apk
 
-      - name: Disponibilizar APK para download
+      - name: Publicar APK direto na Release "latest" (sem ZIP)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          NOTES="Build automático v${VERSION_NAME} (código ${VERSION_CODE}). Baixe EscutaEGrava.apk diretamente no celular para atualizar mantendo seus roteiros."
+          if gh release view latest >/dev/null 2>&1; then
+            gh release edit latest --title "Escuta e Grava v${VERSION_NAME}" --notes "$NOTES"
+            gh release upload latest EscutaEGrava.apk --clobber
+          else
+            gh release create latest EscutaEGrava.apk --title "Escuta e Grava v${VERSION_NAME}" --notes "$NOTES"
+          fi
+
+      - name: Disponibilizar APK também nos Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: EscutaEGrava-debug-apk
-          path: app/build/outputs/apk/debug/app-debug.apk
+          name: EscutaEGrava-v${{ env.VERSION_NAME }}
+          path: EscutaEGrava.apk

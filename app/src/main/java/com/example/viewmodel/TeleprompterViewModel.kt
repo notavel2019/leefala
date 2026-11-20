@@ -12,13 +12,18 @@ import com.example.data.LocalScriptRepository
 import com.example.domain.PortugueseSentenceSplitter
 import com.example.model.AppScreen
 import com.example.model.AudioRouteInfo
+import com.example.model.CameraHardwareCapabilities
+import com.example.model.CameraSettingsState
 import com.example.model.PanelHeightMode
 import com.example.model.PlaybackState
 import com.example.model.RecordingState
 import com.example.model.ScriptDocument
 import com.example.model.TeleprompterPreferences
 import com.example.model.TtsAvailability
+import com.example.model.UpdateCheckState
 import com.example.model.VoiceOption
+import com.example.model.WhiteBalancePreset
+import com.example.update.GitHubUpdateChecker
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -64,6 +69,21 @@ class TeleprompterViewModel(application: Application) : AndroidViewModel(applica
         StudioUiState(isFrontCamera = _preferences.value.preferFrontCamera)
     )
     val studioState: StateFlow<StudioUiState> = _studioState.asStateFlow()
+
+    private val _cameraCapabilities = MutableStateFlow(CameraHardwareCapabilities())
+    val cameraCapabilities: StateFlow<CameraHardwareCapabilities> = _cameraCapabilities.asStateFlow()
+
+    private val _cameraSettings = MutableStateFlow(CameraSettingsState())
+    val cameraSettings: StateFlow<CameraSettingsState> = _cameraSettings.asStateFlow()
+
+    private val _cameraRebindVersion = MutableStateFlow(0)
+    val cameraRebindVersion: StateFlow<Int> = _cameraRebindVersion.asStateFlow()
+
+    private val _githubRepoSlug = MutableStateFlow(repository.loadGithubRepo())
+    val githubRepoSlug: StateFlow<String> = _githubRepoSlug.asStateFlow()
+
+    private val _updateCheckState = MutableStateFlow<UpdateCheckState>(UpdateCheckState.Idle)
+    val updateCheckState: StateFlow<UpdateCheckState> = _updateCheckState.asStateFlow()
 
     private val _recordingState = MutableStateFlow<RecordingState>(RecordingState.Idle)
     val recordingState: StateFlow<RecordingState> = _recordingState.asStateFlow()
@@ -446,9 +466,59 @@ class TeleprompterViewModel(application: Application) : AndroidViewModel(applica
         _currentScreen.value = AppScreen.SETUP
     }
 
-    // --- Studio Overlay & Camera Controls ---
+    // --- GitHub Update Checker ---
+
+    fun updateGithubRepoSlug(slug: String) {
+        _githubRepoSlug.value = slug
+        repository.saveGithubRepo(slug)
+    }
+
+    fun checkForGithubUpdate() {
+        val slug = _githubRepoSlug.value.trim()
+        repository.saveGithubRepo(slug)
+        _updateCheckState.value = UpdateCheckState.Checking
+        viewModelScope.launch {
+            _updateCheckState.value = GitHubUpdateChecker.checkLatestRelease(slug)
+        }
+    }
+
+    fun resetUpdateCheckState() {
+        _updateCheckState.value = UpdateCheckState.Idle
+    }
+
+    // --- Studio Overlay & Pro Camera Controls ---
 
     fun onCameraBound(result: CameraBindResult) {
+        _cameraCapabilities.value = result.capabilities
+        _cameraSettings.update { prev ->
+            val clampedZoom = prev.zoomRatio.coerceIn(
+                result.capabilities.minZoomRatio,
+                result.capabilities.maxZoomRatio.coerceAtLeast(result.capabilities.minZoomRatio),
+            )
+            val clampedEv = if (result.capabilities.supportsExposureCompensation) {
+                prev.exposureIndex.coerceIn(
+                    result.capabilities.exposureMinIndex,
+                    result.capabilities.exposureMaxIndex,
+                )
+            } else {
+                0
+            }
+            val validAperture = prev.selectedAperture?.takeIf { it in result.capabilities.availableApertures }
+                ?: result.capabilities.availableApertures.firstOrNull()
+            prev.copy(
+                selectedCameraId = result.boundCameraId ?: prev.selectedCameraId,
+                zoomRatio = clampedZoom,
+                exposureIndex = clampedEv,
+                selectedAperture = validAperture,
+                manualExposureEnabled = prev.manualExposureEnabled && result.capabilities.supportsManualExposure,
+                manualIso = prev.manualIso.coerceIn(result.capabilities.isoMin, result.capabilities.isoMax),
+                manualShutterNs = prev.manualShutterNs.coerceIn(
+                    result.capabilities.shutterMinNs,
+                    result.capabilities.shutterMaxNs,
+                ),
+                torchEnabled = prev.torchEnabled && result.capabilities.hasFlashUnit,
+            )
+        }
         _studioState.update {
             it.copy(
                 isFrontCamera = result.isFrontCamera,
@@ -475,7 +545,125 @@ class TeleprompterViewModel(application: Application) : AndroidViewModel(applica
         val updatedPrefs = _preferences.value.copy(preferFrontCamera = nextFront)
         _preferences.value = updatedPrefs
         repository.savePreferences(updatedPrefs)
+        _cameraSettings.update {
+            it.copy(
+                selectedCameraId = null,
+                zoomRatio = 1.0f,
+                exposureIndex = 0,
+                manualExposureEnabled = false,
+                aeLocked = false,
+                torchEnabled = false,
+            )
+        }
         _studioState.update { it.copy(isFrontCamera = nextFront, cameraReady = false) }
+        _cameraRebindVersion.update { it + 1 }
+    }
+
+    fun selectCameraLensById(cameraId: String, isFront: Boolean) {
+        if (_recordingState.value.isSessionLocked) return
+        val updatedPrefs = _preferences.value.copy(preferFrontCamera = isFront)
+        _preferences.value = updatedPrefs
+        repository.savePreferences(updatedPrefs)
+        _cameraSettings.update {
+            it.copy(
+                selectedCameraId = cameraId,
+                zoomRatio = 1.0f,
+                exposureIndex = 0,
+                manualExposureEnabled = false,
+                aeLocked = false,
+                torchEnabled = false,
+            )
+        }
+        _studioState.update { it.copy(isFrontCamera = isFront, cameraReady = false) }
+        _cameraRebindVersion.update { it + 1 }
+    }
+
+    fun selectVideoQuality(qualityLabel: String) {
+        if (_recordingState.value.isSessionLocked) return
+        _cameraSettings.update { it.copy(selectedQualityLabel = qualityLabel) }
+        _studioState.update { it.copy(cameraReady = false) }
+        _cameraRebindVersion.update { it + 1 }
+    }
+
+    fun selectVideoFps(fps: Int) {
+        if (_recordingState.value.isSessionLocked) return
+        _cameraSettings.update { it.copy(selectedFps = fps) }
+        _studioState.update { it.copy(cameraReady = false) }
+        _cameraRebindVersion.update { it + 1 }
+    }
+
+    fun setVideoStabilization(enabled: Boolean) {
+        if (_recordingState.value.isSessionLocked) return
+        _cameraSettings.update { it.copy(videoStabilizationEnabled = enabled) }
+        _studioState.update { it.copy(cameraReady = false) }
+        _cameraRebindVersion.update { it + 1 }
+    }
+
+    fun setCameraZoom(ratio: Float) {
+        val caps = _cameraCapabilities.value
+        val clamped = ratio.coerceIn(caps.minZoomRatio, caps.maxZoomRatio.coerceAtLeast(caps.minZoomRatio))
+        updateLiveCameraSettings { it.copy(zoomRatio = clamped) }
+    }
+
+    fun setCameraExposureIndex(index: Int) {
+        val caps = _cameraCapabilities.value
+        val clamped = index.coerceIn(caps.exposureMinIndex, caps.exposureMaxIndex)
+        updateLiveCameraSettings { it.copy(exposureIndex = clamped, manualExposureEnabled = false) }
+    }
+
+    fun setCameraAperture(aperture: Float) {
+        updateLiveCameraSettings { it.copy(selectedAperture = aperture) }
+    }
+
+    fun setManualExposureEnabled(enabled: Boolean) {
+        if (!_cameraCapabilities.value.supportsManualExposure) return
+        updateLiveCameraSettings { it.copy(manualExposureEnabled = enabled, aeLocked = false) }
+    }
+
+    fun setManualIso(iso: Int) {
+        val caps = _cameraCapabilities.value
+        val clamped = iso.coerceIn(caps.isoMin, caps.isoMax)
+        updateLiveCameraSettings { it.copy(manualExposureEnabled = true, manualIso = clamped) }
+    }
+
+    fun setManualShutterNs(shutterNs: Long) {
+        val caps = _cameraCapabilities.value
+        val clamped = shutterNs.coerceIn(caps.shutterMinNs, caps.shutterMaxNs)
+        updateLiveCameraSettings { it.copy(manualExposureEnabled = true, manualShutterNs = clamped) }
+    }
+
+    fun setWhiteBalance(preset: WhiteBalancePreset) {
+        updateLiveCameraSettings { it.copy(whiteBalance = preset) }
+    }
+
+    fun setTorchEnabled(enabled: Boolean) {
+        if (!_cameraCapabilities.value.hasFlashUnit) return
+        updateLiveCameraSettings { it.copy(torchEnabled = enabled) }
+    }
+
+    fun setAeLocked(locked: Boolean) {
+        updateLiveCameraSettings { it.copy(aeLocked = locked, manualExposureEnabled = false) }
+    }
+
+    fun resetCameraControlsToAuto() {
+        val caps = _cameraCapabilities.value
+        updateLiveCameraSettings {
+            it.copy(
+                zoomRatio = 1.0f.coerceIn(caps.minZoomRatio, caps.maxZoomRatio.coerceAtLeast(1.0f)),
+                exposureIndex = 0,
+                manualExposureEnabled = false,
+                selectedAperture = caps.availableApertures.firstOrNull(),
+                whiteBalance = WhiteBalancePreset.AUTO,
+                aeLocked = false,
+                torchEnabled = false,
+            )
+        }
+    }
+
+    private fun updateLiveCameraSettings(transform: (CameraSettingsState) -> CameraSettingsState) {
+        val next = transform(_cameraSettings.value)
+        _cameraSettings.value = next
+        cameraController.applyLiveControls(next, _cameraCapabilities.value)
     }
 
     fun toggleScriptPanelExpanded() {

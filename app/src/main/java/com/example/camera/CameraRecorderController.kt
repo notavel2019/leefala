@@ -6,14 +6,23 @@ import android.content.Context
 import android.content.pm.PackageManager
 import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraManager
+import android.hardware.camera2.CaptureRequest
 import android.media.CamcorderProfile
 import android.net.Uri
 import android.os.Build
 import android.provider.MediaStore
 import android.util.Log
+import android.util.Range
 import android.view.Surface
+import androidx.annotation.OptIn
+import androidx.camera.camera2.interop.Camera2CameraControl
+import androidx.camera.camera2.interop.Camera2CameraInfo
+import androidx.camera.camera2.interop.CaptureRequestOptions
+import androidx.camera.camera2.interop.ExperimentalCamera2Interop
+import androidx.camera.core.Camera
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.DynamicRange
+import androidx.camera.core.FocusMeteringAction
 import androidx.camera.core.MirrorMode
 import androidx.camera.core.Preview
 import androidx.camera.lifecycle.ProcessCameraProvider
@@ -28,9 +37,14 @@ import androidx.camera.video.VideoRecordEvent
 import androidx.camera.view.PreviewView
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.LifecycleOwner
+import com.example.model.CameraHardwareCapabilities
+import com.example.model.CameraLensOption
+import com.example.model.CameraSettingsState
+import com.example.model.WhiteBalancePreset
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.util.concurrent.TimeUnit
 
 data class CameraBindResult(
     val effectiveQualityLabel: String,
@@ -38,21 +52,26 @@ data class CameraBindResult(
     val hasOtherCamera: Boolean,
     val videoCaptureSupported: Boolean = true,
     val warningMessage: String? = null,
+    val capabilities: CameraHardwareCapabilities = CameraHardwareCapabilities(),
+    val boundCameraId: String? = null,
 )
 
 /**
- * Real CameraX 1.5.0 video capture controller.
+ * Real CameraX 1.5.0 + Camera2 Interop video capture controller.
+ * - Enumerates real physical/logical lenses, apertures (f/), focal lengths, zoom range,
+ *   exposure compensation (EV), manual ISO/shutter, white balance, FPS, and video stabilization.
  * - Portrait vertical output with MirrorMode.MIRROR_MODE_OFF (keeps physical scene text readable).
  * - Pre-checks Android CamcorderProfile / EncoderProfiles via CameraManager before instantiating
  *   CameraX Recorder/VideoCapture so virtual/emulator cameras without encoder profiles gracefully
  *   bind Preview-only without triggering CapabilitiesByQuality errors.
- * - Requests 1080p (FHD) with real fallback to 720p (HD) or 480p (SD), reporting actual quality.
  * - Saves directly to MediaStore Movies/EscutaEGrava and only confirms success on Finalize with no error.
  */
+@OptIn(ExperimentalCamera2Interop::class)
 class CameraRecorderController(context: Context) {
 
     private val appContext = context.applicationContext
     private var cameraProvider: ProcessCameraProvider? = null
+    private var boundCamera: Camera? = null
     private var videoCapture: VideoCapture<Recorder>? = null
     private var activeRecording: Recording? = null
     private var lastEffectiveQualityLabel: String = "1080p"
@@ -61,6 +80,7 @@ class CameraRecorderController(context: Context) {
         lifecycleOwner: LifecycleOwner,
         previewView: PreviewView,
         useFrontCamera: Boolean,
+        settings: CameraSettingsState,
         onBound: (CameraBindResult) -> Unit,
         onError: (String) -> Unit,
     ) {
@@ -71,10 +91,17 @@ class CameraRecorderController(context: Context) {
                     val provider = future.get()
                     cameraProvider = provider
 
+                    val allLenses = enumerateLenses(provider)
                     val hasFront = provider.hasCamera(CameraSelector.DEFAULT_FRONT_CAMERA)
                     val hasBack = provider.hasCamera(CameraSelector.DEFAULT_BACK_CAMERA)
 
-                    var actualIsFront = when {
+                    // Pick exact requested lens if specified and available, else match front/back preference
+                    var chosenLens = settings.selectedCameraId?.let { targetId ->
+                        allLenses.firstOrNull { it.cameraId == targetId }
+                    } ?: allLenses.firstOrNull { it.isFront == useFrontCamera }
+                        ?: allLenses.firstOrNull()
+
+                    var actualIsFront = chosenLens?.isFront ?: when {
                         useFrontCamera && hasFront -> true
                         !useFrontCamera && hasBack -> false
                         hasFront -> true
@@ -86,22 +113,24 @@ class CameraRecorderController(context: Context) {
                     }
 
                     // Pre-check real EncoderProfiles via CameraManager/CamcorderProfile before touching Recorder
-                    var supportedQualities = queryEncoderQualitiesForLens(isFront = actualIsFront)
+                    var supportedQualities = queryEncoderQualitiesForCameraId(
+                        chosenLens?.cameraId ?: findCameraIdForFacing(actualIsFront)
+                    )
 
-                    // If requested lens has no encoder profiles but the other lens does, switch cleanly
-                    if (supportedQualities.isEmpty() && hasFront && hasBack) {
-                        val altQualities = queryEncoderQualitiesForLens(isFront = !actualIsFront)
-                        if (altQualities.isNotEmpty()) {
-                            actualIsFront = !actualIsFront
-                            supportedQualities = altQualities
+                    // If chosen lens has no video encoder profiles, check if another lens does
+                    if (supportedQualities.isEmpty() && settings.selectedCameraId == null && allLenses.size > 1) {
+                        val altLens = allLenses.firstOrNull { candidate ->
+                            candidate.cameraId != chosenLens?.cameraId &&
+                                queryEncoderQualitiesForCameraId(candidate.cameraId).isNotEmpty()
+                        }
+                        if (altLens != null) {
+                            chosenLens = altLens
+                            actualIsFront = altLens.isFront
+                            supportedQualities = queryEncoderQualitiesForCameraId(altLens.cameraId)
                         }
                     }
 
-                    val selector = if (actualIsFront) {
-                        CameraSelector.DEFAULT_FRONT_CAMERA
-                    } else {
-                        CameraSelector.DEFAULT_BACK_CAMERA
-                    }
+                    val selector = buildSelectorForLens(chosenLens, actualIsFront)
 
                     val preview = Preview.Builder()
                         .setTargetRotation(Surface.ROTATION_0)
@@ -111,27 +140,47 @@ class CameraRecorderController(context: Context) {
                     provider.unbindAll()
 
                     if (supportedQualities.isEmpty()) {
-                        // Bind Preview-only cleanly when the device/emulator exposes no video EncoderProfiles
-                        provider.bindToLifecycle(lifecycleOwner, selector, preview)
+                        val camera = provider.bindToLifecycle(lifecycleOwner, selector, preview)
+                        boundCamera = camera
                         videoCapture = null
                         lastEffectiveQualityLabel = "Somente prévia"
+                        val caps = readHardwareCapabilities(
+                            camera = camera,
+                            allLenses = allLenses,
+                            activeLens = chosenLens,
+                            supportedQualities = emptyList(),
+                        )
+                        applyLiveControls(settings, caps)
                         onBound(
                             CameraBindResult(
                                 effectiveQualityLabel = "Somente prévia",
                                 isFrontCamera = actualIsFront,
-                                hasOtherCamera = hasFront && hasBack,
+                                hasOtherCamera = allLenses.size > 1 || (hasFront && hasBack),
                                 videoCaptureSupported = false,
                                 warningMessage = "Prévia da câmera ativa, mas este emulador não disponibiliza perfis de gravação de vídeo. Instale o APK em um celular Android físico para gravar.",
+                                capabilities = caps,
+                                boundCameraId = chosenLens?.cameraId,
                             )
                         )
                         return@addListener
                     }
 
-                    val resolvedQuality = supportedQualities.first()
+                    // Honor user's chosen resolution if supported on this lens; else default to 1080p -> 720p -> 480p
+                    val qualityLabels = supportedQualities.map { qualityToLabel(it) }
+                    val orderedForSelector = settings.selectedQualityLabel?.let { wanted ->
+                        val match = supportedQualities.firstOrNull { qualityToLabel(it) == wanted }
+                        if (match != null) {
+                            listOf(match) + supportedQualities.filterNot { it == match }
+                        } else {
+                            supportedQualities
+                        }
+                    } ?: supportedQualities
+
+                    val resolvedQuality = orderedForSelector.first()
                     lastEffectiveQualityLabel = qualityToLabel(resolvedQuality)
 
                     val qualitySelector = QualitySelector.fromOrderedList(
-                        supportedQualities,
+                        orderedForSelector,
                         FallbackStrategy.lowerQualityOrHigherThan(resolvedQuality),
                     )
 
@@ -139,36 +188,68 @@ class CameraRecorderController(context: Context) {
                         .setQualitySelector(qualitySelector)
                         .build()
 
-                    val vc = VideoCapture.Builder(recorder)
+                    val vcBuilder = VideoCapture.Builder(recorder)
                         .setDynamicRange(DynamicRange.SDR)
                         .setMirrorMode(MirrorMode.MIRROR_MODE_OFF)
                         .setTargetRotation(Surface.ROTATION_0)
-                        .build()
+
+                    // Apply hardware video stabilization & target FPS only if supported by this camera's characteristics
+                    val activeCamId = chosenLens?.cameraId ?: findCameraIdForFacing(actualIsFront)
+                    val preCapsFps = querySupportedFpsForCameraId(activeCamId)
+                    val preCapsStab = querySupportsVideoStabilization(activeCamId)
+                    if (preCapsStab) {
+                        vcBuilder.setVideoStabilizationEnabled(settings.videoStabilizationEnabled)
+                    }
+                    if (settings.selectedFps in preCapsFps) {
+                        vcBuilder.setTargetFrameRate(Range(settings.selectedFps, settings.selectedFps))
+                    }
+
+                    val vc = vcBuilder.build()
 
                     try {
-                        provider.bindToLifecycle(lifecycleOwner, selector, preview, vc)
+                        val camera = provider.bindToLifecycle(lifecycleOwner, selector, preview, vc)
+                        boundCamera = camera
                         videoCapture = vc
+                        val caps = readHardwareCapabilities(
+                            camera = camera,
+                            allLenses = allLenses,
+                            activeLens = chosenLens,
+                            supportedQualities = qualityLabels,
+                        )
+                        applyLiveControls(settings, caps)
                         onBound(
                             CameraBindResult(
                                 effectiveQualityLabel = lastEffectiveQualityLabel,
                                 isFrontCamera = actualIsFront,
-                                hasOtherCamera = hasFront && hasBack,
+                                hasOtherCamera = allLenses.size > 1 || (hasFront && hasBack),
                                 videoCaptureSupported = true,
+                                capabilities = caps,
+                                boundCameraId = chosenLens?.cameraId,
                             )
                         )
                     } catch (bindEx: Exception) {
-                        Log.w(TAG, "VideoCapture indisponível nesta câmera (${bindEx.javaClass.simpleName}); mantendo prévia")
+                        Log.w(TAG, "VideoCapture indisponível nesta combinação (${bindEx.javaClass.simpleName}); mantendo prévia")
                         provider.unbindAll()
-                        provider.bindToLifecycle(lifecycleOwner, selector, preview)
+                        val camera = provider.bindToLifecycle(lifecycleOwner, selector, preview)
+                        boundCamera = camera
                         videoCapture = null
                         lastEffectiveQualityLabel = "Somente prévia"
+                        val caps = readHardwareCapabilities(
+                            camera = camera,
+                            allLenses = allLenses,
+                            activeLens = chosenLens,
+                            supportedQualities = emptyList(),
+                        )
+                        applyLiveControls(settings, caps)
                         onBound(
                             CameraBindResult(
                                 effectiveQualityLabel = "Somente prévia",
                                 isFrontCamera = actualIsFront,
-                                hasOtherCamera = hasFront && hasBack,
+                                hasOtherCamera = allLenses.size > 1 || (hasFront && hasBack),
                                 videoCaptureSupported = false,
-                                warningMessage = "Prévia ativa, mas não foi possível vincular a gravação de vídeo nesta câmera.",
+                                warningMessage = "Prévia ativa, mas não foi possível vincular a gravação de vídeo com esta configuração de lente.",
+                                capabilities = caps,
+                                boundCameraId = chosenLens?.cameraId,
                             )
                         )
                     }
@@ -182,11 +263,266 @@ class CameraRecorderController(context: Context) {
     }
 
     /**
-     * Queries Android CamcorderProfile / EncoderProfiles directly via CameraManager in priority order
-     * (1080p -> 720p -> 480p -> 2160p) without invoking CameraX CapabilitiesByQuality when profiles are absent.
+     * Applies live non-destructive CameraX & Camera2 hardware controls (zoom, aperture, EV,
+     * manual ISO/shutter, white balance, AE lock, torch) without interrupting recording.
      */
-    private fun queryEncoderQualitiesForLens(isFront: Boolean): List<Quality> {
-        val cameraId = findCameraIdForFacing(isFront) ?: return emptyList()
+    fun applyLiveControls(
+        settings: CameraSettingsState,
+        capabilities: CameraHardwareCapabilities,
+    ) {
+        val camera = boundCamera ?: return
+        try {
+            // Zoom ratio
+            if (capabilities.maxZoomRatio > capabilities.minZoomRatio) {
+                val safeZoom = settings.zoomRatio.coerceIn(
+                    capabilities.minZoomRatio,
+                    capabilities.maxZoomRatio,
+                )
+                camera.cameraControl.setZoomRatio(safeZoom)
+            }
+
+            // Torch
+            if (capabilities.hasFlashUnit) {
+                camera.cameraControl.enableTorch(settings.torchEnabled)
+            }
+
+            // Exposure compensation (used when Auto Exposure is active)
+            if (!settings.manualExposureEnabled && capabilities.supportsExposureCompensation) {
+                val safeEv = settings.exposureIndex.coerceIn(
+                    capabilities.exposureMinIndex,
+                    capabilities.exposureMaxIndex,
+                )
+                camera.cameraControl.setExposureCompensationIndex(safeEv)
+            }
+
+            // Camera2 Interop: Aperture, White Balance, Manual ISO/Shutter, AE Lock
+            val optionsBuilder = CaptureRequestOptions.Builder()
+
+            // Variable physical aperture (when hardware supports > 1 aperture value)
+            if (capabilities.supportsVariableAperture) {
+                val aperture = settings.selectedAperture?.takeIf { it in capabilities.availableApertures }
+                    ?: capabilities.availableApertures.firstOrNull()
+                if (aperture != null) {
+                    optionsBuilder.setCaptureRequestOption(CaptureRequest.LENS_APERTURE, aperture)
+                }
+            }
+
+            // White balance
+            if (settings.whiteBalance in capabilities.supportedWhiteBalance) {
+                optionsBuilder.setCaptureRequestOption(
+                    CaptureRequest.CONTROL_AWB_MODE,
+                    settings.whiteBalance.camera2Mode,
+                )
+            }
+
+            // Manual Exposure (ISO + Shutter) vs Auto Exposure
+            if (settings.manualExposureEnabled && capabilities.supportsManualExposure) {
+                val safeIso = settings.manualIso.coerceIn(capabilities.isoMin, capabilities.isoMax)
+                val safeShutter = settings.manualShutterNs.coerceIn(capabilities.shutterMinNs, capabilities.shutterMaxNs)
+                optionsBuilder.setCaptureRequestOption(
+                    CaptureRequest.CONTROL_AE_MODE,
+                    CaptureRequest.CONTROL_AE_MODE_OFF,
+                )
+                optionsBuilder.setCaptureRequestOption(CaptureRequest.SENSOR_SENSITIVITY, safeIso)
+                optionsBuilder.setCaptureRequestOption(CaptureRequest.SENSOR_EXPOSURE_TIME, safeShutter)
+            } else {
+                optionsBuilder.setCaptureRequestOption(
+                    CaptureRequest.CONTROL_AE_MODE,
+                    CaptureRequest.CONTROL_AE_MODE_ON,
+                )
+                optionsBuilder.setCaptureRequestOption(
+                    CaptureRequest.CONTROL_AE_LOCK,
+                    settings.aeLocked,
+                )
+            }
+
+            Camera2CameraControl.from(camera.cameraControl)
+                .setCaptureRequestOptions(optionsBuilder.build())
+        } catch (e: Exception) {
+            Log.w(TAG, "Ajuste de câmera não suportado pelo driver: ${e.javaClass.simpleName}")
+        }
+    }
+
+    fun tapToFocus(previewView: PreviewView, x: Float, y: Float) {
+        val camera = boundCamera ?: return
+        try {
+            val point = previewView.meteringPointFactory.createPoint(x, y)
+            val action = FocusMeteringAction.Builder(
+                point,
+                FocusMeteringAction.FLAG_AF or FocusMeteringAction.FLAG_AE,
+            )
+                .setAutoCancelDuration(4, TimeUnit.SECONDS)
+                .build()
+            camera.cameraControl.startFocusAndMetering(action)
+        } catch (e: Exception) {
+            Log.w(TAG, "Falha ao focar no ponto tocado: ${e.javaClass.simpleName}")
+        }
+    }
+
+    private fun enumerateLenses(provider: ProcessCameraProvider): List<CameraLensOption> {
+        val manager = appContext.getSystemService(Context.CAMERA_SERVICE) as CameraManager
+        val result = mutableListOf<CameraLensOption>()
+        var frontCount = 0
+        var backCount = 0
+
+        for (info in provider.availableCameraInfos) {
+            try {
+                val c2Info = Camera2CameraInfo.from(info)
+                val camId = c2Info.cameraId
+                val chars = manager.getCameraCharacteristics(camId)
+                val facing = chars.get(CameraCharacteristics.LENS_FACING) ?: continue
+                val isFront = facing == CameraCharacteristics.LENS_FACING_FRONT
+                if (facing != CameraCharacteristics.LENS_FACING_FRONT &&
+                    facing != CameraCharacteristics.LENS_FACING_BACK
+                ) {
+                    continue
+                }
+                val focals = chars.get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS)
+                val focalMm = focals?.firstOrNull()
+                val apertures = chars.get(CameraCharacteristics.LENS_INFO_AVAILABLE_APERTURES)
+                    ?.toList()
+                    ?.distinct()
+                    ?.sorted()
+                    .orEmpty()
+
+                val baseName = if (isFront) {
+                    frontCount++
+                    if (frontCount == 1) "Frontal" else "Frontal $frontCount"
+                } else {
+                    backCount++
+                    when {
+                        backCount == 1 -> "Traseira"
+                        focalMm != null && focalMm < 2.5f -> "Ultra-wide"
+                        focalMm != null && focalMm > 7.5f -> "Tele"
+                        else -> "Traseira $backCount"
+                    }
+                }
+
+                val apertureTag = apertures.firstOrNull()?.let { formatAperture(it) }
+                val focalTag = focalMm?.let { String.format(Locale.US, "%.1fmm", it) }
+                val detail = listOfNotNull(focalTag, apertureTag).joinToString(" • ")
+                val fullLabel = if (detail.isNotEmpty()) "$baseName ($detail)" else baseName
+
+                result.add(
+                    CameraLensOption(
+                        cameraId = camId,
+                        label = fullLabel,
+                        isFront = isFront,
+                        focalLengthMm = focalMm,
+                        apertures = apertures,
+                    )
+                )
+            } catch (_: Exception) {
+            }
+        }
+        return result
+    }
+
+    private fun buildSelectorForLens(lens: CameraLensOption?, isFront: Boolean): CameraSelector {
+        if (lens != null) {
+            return CameraSelector.Builder()
+                .addCameraFilter { infos ->
+                    val exact = infos.filter { Camera2CameraInfo.from(it).cameraId == lens.cameraId }
+                    exact.ifEmpty { infos }
+                }
+                .build()
+        }
+        return if (isFront) CameraSelector.DEFAULT_FRONT_CAMERA else CameraSelector.DEFAULT_BACK_CAMERA
+    }
+
+    private fun readHardwareCapabilities(
+        camera: Camera,
+        allLenses: List<CameraLensOption>,
+        activeLens: CameraLensOption?,
+        supportedQualities: List<String>,
+    ): CameraHardwareCapabilities {
+        val info = camera.cameraInfo
+        val c2Info = Camera2CameraInfo.from(info)
+        val zoom = info.zoomState.value
+        val exp = info.exposureState
+
+        val apertures = c2Info.getCameraCharacteristic(CameraCharacteristics.LENS_INFO_AVAILABLE_APERTURES)
+            ?.toList()
+            ?.distinct()
+            ?.sorted()
+            .orEmpty()
+
+        val aeModes = c2Info.getCameraCharacteristic(CameraCharacteristics.CONTROL_AE_AVAILABLE_MODES)
+            ?.toSet()
+            .orEmpty()
+        val isoRange = c2Info.getCameraCharacteristic(CameraCharacteristics.SENSOR_INFO_SENSITIVITY_RANGE)
+        val shutterRange = c2Info.getCameraCharacteristic(CameraCharacteristics.SENSOR_INFO_EXPOSURE_TIME_RANGE)
+        val supportsManual = aeModes.contains(CaptureRequest.CONTROL_AE_MODE_OFF) &&
+            isoRange != null &&
+            shutterRange != null
+
+        val awbModes = c2Info.getCameraCharacteristic(CameraCharacteristics.CONTROL_AWB_AVAILABLE_MODES)
+            ?.toSet()
+            .orEmpty()
+        val wbPresets = WhiteBalancePreset.entries.filter { it.camera2Mode in awbModes }
+            .ifEmpty { listOf(WhiteBalancePreset.AUTO) }
+
+        val fpsList = querySupportedFpsForCameraId(c2Info.cameraId)
+        val stabSupported = querySupportsVideoStabilization(c2Info.cameraId)
+
+        return CameraHardwareCapabilities(
+            availableLenses = allLenses,
+            activeLens = activeLens,
+            availableApertures = apertures,
+            minZoomRatio = zoom?.minZoomRatio ?: 1f,
+            maxZoomRatio = zoom?.maxZoomRatio ?: 1f,
+            exposureMinIndex = if (exp.isExposureCompensationSupported) exp.exposureCompensationRange.lower else 0,
+            exposureMaxIndex = if (exp.isExposureCompensationSupported) exp.exposureCompensationRange.upper else 0,
+            exposureStepEv = if (exp.isExposureCompensationSupported) exp.exposureCompensationStep.toFloat() else 0.33f,
+            supportsManualExposure = supportsManual,
+            isoMin = isoRange?.lower ?: 100,
+            isoMax = (isoRange?.upper ?: 1600).coerceAtMost(6400),
+            shutterMinNs = shutterRange?.lower ?: 1_000_000L,
+            shutterMaxNs = (shutterRange?.upper ?: 33_333_333L).coerceAtMost(100_000_000L),
+            supportedWhiteBalance = wbPresets,
+            supportedQualities = supportedQualities,
+            supportedFps = fpsList,
+            supportsVideoStabilization = stabSupported,
+            hasFlashUnit = info.hasFlashUnit(),
+        )
+    }
+
+    private fun querySupportedFpsForCameraId(cameraId: String?): List<Int> {
+        if (cameraId == null) return listOf(30)
+        return try {
+            val manager = appContext.getSystemService(Context.CAMERA_SERVICE) as CameraManager
+            val ranges = manager.getCameraCharacteristics(cameraId)
+                .get(CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES)
+                .orEmpty()
+            val fps = mutableListOf(30)
+            if (ranges.any { it.upper >= 60 }) {
+                fps.add(60)
+            }
+            fps
+        } catch (_: Exception) {
+            listOf(30)
+        }
+    }
+
+    private fun querySupportsVideoStabilization(cameraId: String?): Boolean {
+        if (cameraId == null) return false
+        return try {
+            val manager = appContext.getSystemService(Context.CAMERA_SERVICE) as CameraManager
+            val modes = manager.getCameraCharacteristics(cameraId)
+                .get(CameraCharacteristics.CONTROL_AVAILABLE_VIDEO_STABILIZATION_MODES)
+                ?: intArrayOf()
+            modes.any { it != CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE_OFF }
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    /**
+     * Queries Android CamcorderProfile / EncoderProfiles directly via CameraManager in priority order
+     * without invoking CameraX CapabilitiesByQuality when profiles are absent.
+     */
+    private fun queryEncoderQualitiesForCameraId(cameraId: String?): List<Quality> {
+        if (cameraId == null) return emptyList()
         val candidates = listOf(
             CamcorderProfile.QUALITY_1080P to Quality.FHD,
             CamcorderProfile.QUALITY_720P to Quality.HD,
@@ -348,6 +684,7 @@ class CameraRecorderController(context: Context) {
     fun release() {
         stopRecording()
         activeRecording = null
+        boundCamera = null
         try {
             cameraProvider?.unbindAll()
         } catch (_: Exception) {
@@ -360,7 +697,13 @@ class CameraRecorderController(context: Context) {
         Quality.FHD -> "1080p"
         Quality.HD -> "720p"
         Quality.SD -> "480p"
-        else -> "Qualidade padrão"
+        Quality.HIGHEST -> "Alta"
+        Quality.LOWEST -> "Básica"
+        else -> "Padrão"
+    }
+
+    private fun formatAperture(value: Float): String {
+        return String.format(Locale.US, "f/%.1f", value)
     }
 
     private fun mapFinalizeError(errorCode: Int): String = when (errorCode) {

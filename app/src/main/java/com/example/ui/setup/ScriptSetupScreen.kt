@@ -36,6 +36,7 @@ import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.NoteAdd
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Save
+import androidx.compose.material.icons.filled.SystemUpdate
 import androidx.compose.material.icons.filled.Videocam
 import androidx.compose.material.icons.filled.VolumeUp
 import androidx.compose.material.icons.outlined.EditNote
@@ -82,6 +83,7 @@ import com.example.model.AudioRouteKind
 import com.example.model.ScriptDocument
 import com.example.model.TeleprompterPreferences
 import com.example.model.TtsAvailability
+import com.example.model.UpdateCheckState
 import com.example.model.VoiceOption
 import com.example.ui.theme.RouteAmber
 import com.example.ui.theme.RouteAmberContainer
@@ -121,10 +123,17 @@ fun ScriptSetupScreen(
     onInstallTtsData: () -> Unit,
     onOpenTtsSettings: () -> Unit,
     onOpenStudio: () -> Unit,
+    githubRepoSlug: String,
+    updateCheckState: UpdateCheckState,
+    onGithubRepoSlugChanged: (String) -> Unit,
+    onCheckGithubUpdate: () -> Unit,
+    onResetUpdateState: () -> Unit,
+    onOpenExternalUrl: (String) -> Unit,
 ) {
     // 0 = Roteiro, 1 = Frases, 2 = Voz e Áudio
     var selectedTab by rememberSaveable { mutableIntStateOf(0) }
     var showSavedScriptsSheet by remember { mutableStateOf(false) }
+    var showUpdateSheet by remember { mutableStateOf(false) }
     var showConfirmResplit by remember { mutableStateOf(false) }
     var showAddPhraseDialog by remember { mutableStateOf(false) }
 
@@ -181,6 +190,16 @@ fun ScriptSetupScreen(
                             imageVector = Icons.Filled.Videocam,
                             contentDescription = "Abrir câmera",
                             tint = MaterialTheme.colorScheme.primary,
+                        )
+                    }
+                    IconButton(
+                        onClick = { showUpdateSheet = true },
+                        modifier = Modifier.testTag("open_update_sheet_button"),
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.SystemUpdate,
+                            contentDescription = "Atualizar pelo GitHub",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
                     IconButton(
@@ -427,6 +446,20 @@ fun ScriptSetupScreen(
                 }
             }
         }
+    }
+
+    if (showUpdateSheet) {
+        UpdateSheet(
+            repoSlug = githubRepoSlug,
+            updateState = updateCheckState,
+            onRepoSlugChanged = onGithubRepoSlugChanged,
+            onCheckUpdate = onCheckGithubUpdate,
+            onOpenUrl = onOpenExternalUrl,
+            onDismiss = {
+                showUpdateSheet = false
+                onResetUpdateState()
+            },
+        )
     }
 
     if (showSavedScriptsSheet) {

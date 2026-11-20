@@ -38,6 +38,11 @@ class MainActivity : ComponentActivity() {
                 val isPlayingSample by viewModel.isPlayingSample.collectAsStateWithLifecycle()
                 val playbackState by viewModel.playbackState.collectAsStateWithLifecycle()
                 val recordingState by viewModel.recordingState.collectAsStateWithLifecycle()
+                val cameraCapabilities by viewModel.cameraCapabilities.collectAsStateWithLifecycle()
+                val cameraSettings by viewModel.cameraSettings.collectAsStateWithLifecycle()
+                val cameraRebindVersion by viewModel.cameraRebindVersion.collectAsStateWithLifecycle()
+                val githubRepoSlug by viewModel.githubRepoSlug.collectAsStateWithLifecycle()
+                val updateCheckState by viewModel.updateCheckState.collectAsStateWithLifecycle()
 
                 when (currentScreen) {
                     AppScreen.SETUP -> {
@@ -71,6 +76,12 @@ class MainActivity : ComponentActivity() {
                             onInstallTtsData = ::launchTtsInstall,
                             onOpenTtsSettings = ::openTtsSettings,
                             onOpenStudio = viewModel::openRecordingStudio,
+                            githubRepoSlug = githubRepoSlug,
+                            updateCheckState = updateCheckState,
+                            onGithubRepoSlugChanged = viewModel::updateGithubRepoSlug,
+                            onCheckGithubUpdate = viewModel::checkForGithubUpdate,
+                            onResetUpdateState = viewModel::resetUpdateCheckState,
+                            onOpenExternalUrl = ::openExternalUrl,
                         )
                     }
 
@@ -83,10 +94,27 @@ class MainActivity : ComponentActivity() {
                             playbackState = playbackState,
                             recordingState = recordingState,
                             audioRoute = audioRoute,
+                            cameraCapabilities = cameraCapabilities,
+                            cameraSettings = cameraSettings,
+                            cameraRebindVersion = cameraRebindVersion,
                             cameraController = viewModel.cameraController,
                             onCameraBound = viewModel::onCameraBound,
                             onCameraError = viewModel::onCameraError,
                             onToggleCameraLens = viewModel::toggleCameraLens,
+                            onSelectCameraLens = viewModel::selectCameraLensById,
+                            onSelectAperture = viewModel::setCameraAperture,
+                            onZoomChange = viewModel::setCameraZoom,
+                            onExposureIndexChange = viewModel::setCameraExposureIndex,
+                            onManualExposureToggle = viewModel::setManualExposureEnabled,
+                            onManualIsoChange = viewModel::setManualIso,
+                            onManualShutterChange = viewModel::setManualShutterNs,
+                            onSelectWhiteBalance = viewModel::setWhiteBalance,
+                            onSelectQuality = viewModel::selectVideoQuality,
+                            onSelectFps = viewModel::selectVideoFps,
+                            onVideoStabilizationToggle = viewModel::setVideoStabilization,
+                            onTorchToggle = viewModel::setTorchEnabled,
+                            onAeLockToggle = viewModel::setAeLocked,
+                            onResetCameraControls = viewModel::resetCameraControlsToAuto,
                             onTogglePanelExpanded = viewModel::toggleScriptPanelExpanded,
                             onCyclePanelHeight = viewModel::cyclePanelHeight,
                             onAdjustFontSize = viewModel::adjustOverlayFontSize,
@@ -150,6 +178,14 @@ class MainActivity : ComponentActivity() {
         safeStartActivity(
             intent,
             fallbackMessage = "Abra as configurações do aplicativo para conceder câmera e microfone.",
+        )
+    }
+
+    private fun openExternalUrl(url: String) {
+        val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url))
+        safeStartActivity(
+            intent,
+            fallbackMessage = "Não foi possível abrir o navegador.",
         )
     }
 

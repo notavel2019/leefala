@@ -72,6 +72,12 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.layout.offset
+import androidx.compose.material.icons.filled.Tune
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
@@ -81,15 +87,23 @@ import com.example.camera.CameraBindResult
 import com.example.camera.CameraRecorderController
 import com.example.model.AudioRouteInfo
 import com.example.model.AudioRouteKind
+import com.example.model.CameraHardwareCapabilities
+import com.example.model.CameraSettingsState
 import com.example.model.PlaybackState
 import com.example.model.RecordingState
 import com.example.model.TeleprompterPreferences
+import com.example.model.WhiteBalancePreset
 import com.example.ui.theme.JetBrainsMonoFamily
 import com.example.ui.theme.RecCrimson
 import com.example.ui.theme.RouteAmber
 import com.example.ui.theme.RouteEmerald
 import com.example.ui.theme.StudioDarkCanvas
+import com.example.ui.theme.StudioTealOnDark
 import com.example.viewmodel.StudioUiState
+import kotlinx.coroutines.delay
+import java.util.Locale
+import kotlin.math.abs
+import kotlin.math.roundToInt
 
 @Composable
 fun RecordingStudioScreen(
@@ -100,10 +114,27 @@ fun RecordingStudioScreen(
     playbackState: PlaybackState,
     recordingState: RecordingState,
     audioRoute: AudioRouteInfo,
+    cameraCapabilities: CameraHardwareCapabilities,
+    cameraSettings: CameraSettingsState,
+    cameraRebindVersion: Int,
     cameraController: CameraRecorderController,
     onCameraBound: (CameraBindResult) -> Unit,
     onCameraError: (String) -> Unit,
     onToggleCameraLens: () -> Unit,
+    onSelectCameraLens: (String, Boolean) -> Unit,
+    onSelectAperture: (Float) -> Unit,
+    onZoomChange: (Float) -> Unit,
+    onExposureIndexChange: (Int) -> Unit,
+    onManualExposureToggle: (Boolean) -> Unit,
+    onManualIsoChange: (Int) -> Unit,
+    onManualShutterChange: (Long) -> Unit,
+    onSelectWhiteBalance: (WhiteBalancePreset) -> Unit,
+    onSelectQuality: (String) -> Unit,
+    onSelectFps: (Int) -> Unit,
+    onVideoStabilizationToggle: (Boolean) -> Unit,
+    onTorchToggle: (Boolean) -> Unit,
+    onAeLockToggle: (Boolean) -> Unit,
+    onResetCameraControls: () -> Unit,
     onTogglePanelExpanded: () -> Unit,
     onCyclePanelHeight: () -> Unit,
     onAdjustFontSize: (Float) -> Unit,
@@ -167,6 +198,15 @@ fun RecordingStudioScreen(
     }
 
     var showExitRecordingDialog by remember { mutableStateOf(false) }
+    var showCameraSettingsSheet by remember { mutableStateOf(false) }
+    var focusTapOffset by remember { mutableStateOf<Offset?>(null) }
+
+    LaunchedEffect(focusTapOffset) {
+        if (focusTapOffset != null) {
+            delay(1200L)
+            focusTapOffset = null
+        }
+    }
 
     val requestExit: () -> Unit = {
         if (recordingState.isSessionLocked) {
@@ -193,7 +233,7 @@ fun RecordingStudioScreen(
                 onBack = onExitStudio,
             )
         } else {
-            // Layer 1: Real CameraX PreviewView (UI overlays below are never recorded into the video)
+            // Layer 1: Real CameraX PreviewView + Tap-to-focus (UI overlays below are never recorded into the video)
             val previewView = remember {
                 PreviewView(context).apply {
                     implementationMode = PreviewView.ImplementationMode.COMPATIBLE
@@ -201,22 +241,45 @@ fun RecordingStudioScreen(
                 }
             }
 
-            LaunchedEffect(studioState.isFrontCamera, permissionsGranted) {
+            LaunchedEffect(cameraRebindVersion, permissionsGranted) {
                 if (permissionsGranted) {
                     cameraController.bindCamera(
                         lifecycleOwner = lifecycleOwner,
                         previewView = previewView,
                         useFrontCamera = studioState.isFrontCamera,
+                        settings = cameraSettings,
                         onBound = onCameraBound,
                         onError = onCameraError,
                     )
                 }
             }
 
-            AndroidView(
-                factory = { previewView },
-                modifier = Modifier.fillMaxSize(),
-            )
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .pointerInput(Unit) {
+                        detectTapGestures { tapOffset ->
+                            focusTapOffset = tapOffset
+                            cameraController.tapToFocus(previewView, tapOffset.x, tapOffset.y)
+                        }
+                    },
+            ) {
+                AndroidView(
+                    factory = { previewView },
+                    modifier = Modifier.fillMaxSize(),
+                )
+
+                focusTapOffset?.let { tap ->
+                    Surface(
+                        color = Color.Transparent,
+                        shape = CircleShape,
+                        border = BorderStroke(2.dp, StudioTealOnDark),
+                        modifier = Modifier
+                            .offset { IntOffset((tap.x - 32.dp.toPx()).roundToInt(), (tap.y - 32.dp.toPx()).roundToInt()) }
+                            .size(64.dp),
+                    ) {}
+                }
+            }
 
             // Subtle top & bottom gradient scrims for crisp overlay legibility
             Box(
@@ -255,7 +318,9 @@ fun RecordingStudioScreen(
                     studioState = studioState,
                     recordingState = recordingState,
                     audioRoute = audioRoute,
+                    activeAperture = cameraSettings.selectedAperture ?: cameraCapabilities.availableApertures.firstOrNull(),
                     onBack = requestExit,
+                    onOpenCameraSettings = { showCameraSettingsSheet = true },
                     onToggleCameraLens = onToggleCameraLens,
                 )
 
@@ -393,22 +458,94 @@ fun RecordingStudioScreen(
                 }
             }
 
-            // Layer 5: Bottom independent Reading + Recording dock
-            StudioControls(
-                playbackState = playbackState,
-                recordingState = recordingState,
-                cameraReady = studioState.cameraReady,
-                hasSentences = sentences.isNotEmpty(),
-                onPreviousPhrase = onPreviousPhrase,
-                onRepeatPhrase = onRepeatPhrase,
-                onPlayPauseReading = onPlayPauseReading,
-                onNextPhrase = onNextPhrase,
-                onStartRecording = { onStartRecording(false) },
-                onStartShortTest = { onStartRecording(true) },
-                onStopRecording = onStopRecording,
-                modifier = Modifier.align(Alignment.BottomCenter),
-            )
+            // Layer 5: Quick Zoom / Lens Strip + Bottom independent Reading + Recording dock
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .align(Alignment.BottomCenter),
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
+                if (cameraCapabilities.maxZoomRatio > cameraCapabilities.minZoomRatio + 0.05f) {
+                    val zoomPresets = listOf(0.5f, 0.6f, 1.0f, 2.0f, 3.0f).filter {
+                        it >= cameraCapabilities.minZoomRatio - 0.02f &&
+                            it <= cameraCapabilities.maxZoomRatio + 0.02f
+                    }
+                    if (zoomPresets.size >= 2) {
+                        Surface(
+                            color = Color.Black.copy(alpha = 0.48f),
+                            shape = RoundedCornerShape(999.dp),
+                            border = BorderStroke(1.dp, Color.White.copy(alpha = 0.14f)),
+                            modifier = Modifier.padding(bottom = 4.dp),
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 4.dp),
+                                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                            ) {
+                                zoomPresets.forEach { preset ->
+                                    val isSelected = abs(cameraSettings.zoomRatio - preset) < 0.08f
+                                    Surface(
+                                        onClick = { onZoomChange(preset) },
+                                        color = if (isSelected) StudioTealOnDark else Color.Transparent,
+                                        shape = RoundedCornerShape(999.dp),
+                                    ) {
+                                        Text(
+                                            text = if (preset == preset.roundToInt().toFloat()) {
+                                                "${preset.roundToInt()}x"
+                                            } else {
+                                                String.format(Locale("pt", "BR"), "%.1fx", preset)
+                                            },
+                                            fontFamily = JetBrainsMonoFamily,
+                                            fontSize = 11.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            color = if (isSelected) Color(0xFF0B1116) else Color.White,
+                                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                StudioControls(
+                    playbackState = playbackState,
+                    recordingState = recordingState,
+                    cameraReady = studioState.cameraReady,
+                    hasSentences = sentences.isNotEmpty(),
+                    onPreviousPhrase = onPreviousPhrase,
+                    onRepeatPhrase = onRepeatPhrase,
+                    onPlayPauseReading = onPlayPauseReading,
+                    onNextPhrase = onNextPhrase,
+                    onStartRecording = { onStartRecording(false) },
+                    onStartShortTest = { onStartRecording(true) },
+                    onStopRecording = onStopRecording,
+                )
+            }
         }
+    }
+
+    if (showCameraSettingsSheet) {
+        CameraSettingsSheet(
+            capabilities = cameraCapabilities,
+            settings = cameraSettings,
+            effectiveQualityLabel = studioState.effectiveQualityLabel,
+            isRecordingLocked = recordingState.isSessionLocked,
+            onSelectLens = onSelectCameraLens,
+            onSelectAperture = onSelectAperture,
+            onZoomChange = onZoomChange,
+            onExposureIndexChange = onExposureIndexChange,
+            onManualExposureToggle = onManualExposureToggle,
+            onManualIsoChange = onManualIsoChange,
+            onManualShutterChange = onManualShutterChange,
+            onSelectWhiteBalance = onSelectWhiteBalance,
+            onSelectQuality = onSelectQuality,
+            onSelectFps = onSelectFps,
+            onVideoStabilizationToggle = onVideoStabilizationToggle,
+            onTorchToggle = onTorchToggle,
+            onAeLockToggle = onAeLockToggle,
+            onResetToAuto = onResetCameraControls,
+            onDismiss = { showCameraSettingsSheet = false },
+        )
     }
 
     // Confirmed Video Saved Sheet (shown ONLY on VideoRecordEvent.Finalize with no error)
@@ -478,7 +615,9 @@ private fun StudioTopBar(
     studioState: StudioUiState,
     recordingState: RecordingState,
     audioRoute: AudioRouteInfo,
+    activeAperture: Float?,
     onBack: () -> Unit,
+    onOpenCameraSettings: () -> Unit,
     onToggleCameraLens: () -> Unit,
 ) {
     val isLocked = recordingState.isSessionLocked
@@ -493,7 +632,7 @@ private fun StudioTopBar(
     Row(
         modifier = Modifier.fillMaxWidth(),
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
     ) {
         // Back button
         Surface(
@@ -514,7 +653,7 @@ private fun StudioTopBar(
             }
         }
 
-        // Center status pill: REC timer OR Camera quality + Lens badge
+        // Center status pill: REC timer OR Camera quality + Lens + Aperture badge
         val recBadgeModifier = Modifier.weight(1f)
         when (recordingState) {
             is RecordingState.Recording,
@@ -533,7 +672,7 @@ private fun StudioTopBar(
                     modifier = recBadgeModifier.testTag("rec_status_pill"),
                 ) {
                     Row(
-                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.Center,
                     ) {
@@ -558,25 +697,48 @@ private fun StudioTopBar(
 
             else -> {
                 Surface(
+                    onClick = onOpenCameraSettings,
                     color = Color.Black.copy(alpha = 0.55f),
                     shape = RoundedCornerShape(999.dp),
                     modifier = recBadgeModifier,
                 ) {
                     Row(
-                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 10.dp),
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.Center,
                     ) {
                         val lensLabel = if (studioState.isFrontCamera) "Frontal" else "Traseira"
+                        val apertureSuffix = activeAperture?.let { String.format(Locale.US, " • f/%.1f", it) } ?: ""
                         Text(
-                            text = "$lensLabel • ${studioState.effectiveQualityLabel}",
+                            text = "$lensLabel$apertureSuffix • ${studioState.effectiveQualityLabel}",
                             fontFamily = JetBrainsMonoFamily,
                             fontWeight = FontWeight.Medium,
-                            fontSize = 12.sp,
+                            fontSize = 11.sp,
                             color = Color.White,
+                            maxLines = 1,
                         )
                     }
                 }
+            }
+        }
+
+        // Pro Camera Settings button (lenses, aperture, EV, ISO, WB, FPS, stabilization)
+        Surface(
+            color = Color.Black.copy(alpha = 0.58f),
+            shape = CircleShape,
+        ) {
+            IconButton(
+                onClick = onOpenCameraSettings,
+                modifier = Modifier
+                    .size(48.dp)
+                    .testTag("camera_settings_button"),
+            ) {
+                Icon(
+                    imageVector = Icons.Filled.Tune,
+                    contentDescription = "Configurações da câmera",
+                    tint = Color.White,
+                    modifier = Modifier.size(21.dp),
+                )
             }
         }
 

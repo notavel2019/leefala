@@ -114,6 +114,12 @@ class LocalScriptRepository(context: Context) {
             .apply()
     }
 
+    fun loadGithubRepo(): String = prefs.getString(KEY_GITHUB_REPO, "") ?: ""
+
+    fun saveGithubRepo(repoSlug: String) {
+        prefs.edit().putString(KEY_GITHUB_REPO, repoSlug.trim()).apply()
+    }
+
     companion object {
         private const val TAG = "LocalScriptRepo"
         private const val PREFS_NAME = "escuta_e_grava_prefs"
@@ -124,5 +130,6 @@ class LocalScriptRepository(context: Context) {
         private const val KEY_OVERLAY_FONT_SP = "overlay_font_sp"
         private const val KEY_PANEL_HEIGHT = "panel_height"
         private const val KEY_PREFER_FRONT_CAMERA = "prefer_front_camera"
+        private const val KEY_GITHUB_REPO = "github_repo_slug"
     }
 }
