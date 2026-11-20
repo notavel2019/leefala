@@ -80,6 +80,7 @@ import androidx.compose.ui.unit.dp
 import com.example.R
 import com.example.model.AudioRouteInfo
 import com.example.model.AudioRouteKind
+import com.example.model.NarratorStyle
 import com.example.model.ScriptDocument
 import com.example.model.TeleprompterPreferences
 import com.example.model.TtsAvailability
@@ -100,6 +101,8 @@ fun ScriptSetupScreen(
     ttsAvailability: TtsAvailability,
     voices: List<VoiceOption>,
     selectedVoiceName: String?,
+    activeTtsEngineLabel: String,
+    hasGoogleTtsInstalled: Boolean,
     isPlayingSample: Boolean,
     onTitleChanged: (String) -> Unit,
     onRawTextChanged: (String) -> Unit,
@@ -115,8 +118,14 @@ fun ScriptSetupScreen(
     onDeleteScript: (String) -> Unit,
     onClearBanner: () -> Unit,
     onSelectVoice: (String) -> Unit,
+    onApplyNarratorStyle: (NarratorStyle) -> Unit,
     onSpeechRateChange: (Float) -> Unit,
+    onSpeechPitchChange: (Float) -> Unit,
     onPauseSecondsChange: (Float) -> Unit,
+    onNaturalProsodyToggle: (Boolean) -> Unit,
+    onPreferGoogleTtsToggle: (Boolean) -> Unit,
+    onReturnVolumeChange: (Float) -> Unit,
+    onStepReturnVolume: (Float) -> Unit,
     onToggleSample: () -> Unit,
     onRefreshTtsAndRoute: () -> Unit,
     onOpenBluetoothSettings: () -> Unit,
@@ -433,10 +442,18 @@ fun ScriptSetupScreen(
                         ttsAvailability = ttsAvailability,
                         voices = voices,
                         selectedVoiceName = selectedVoiceName,
+                        activeTtsEngineLabel = activeTtsEngineLabel,
+                        hasGoogleTtsInstalled = hasGoogleTtsInstalled,
                         isPlayingSample = isPlayingSample,
                         onSelectVoice = onSelectVoice,
+                        onApplyNarratorStyle = onApplyNarratorStyle,
                         onSpeechRateChange = onSpeechRateChange,
+                        onSpeechPitchChange = onSpeechPitchChange,
                         onPauseSecondsChange = onPauseSecondsChange,
+                        onNaturalProsodyToggle = onNaturalProsodyToggle,
+                        onPreferGoogleTtsToggle = onPreferGoogleTtsToggle,
+                        onReturnVolumeChange = onReturnVolumeChange,
+                        onStepReturnVolume = onStepReturnVolume,
                         onToggleSample = onToggleSample,
                         onRefreshTtsAndRoute = onRefreshTtsAndRoute,
                         onOpenBluetoothSettings = onOpenBluetoothSettings,

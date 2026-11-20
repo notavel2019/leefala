@@ -1,6 +1,7 @@
 package com.example
 
 import android.content.Intent
+import android.media.AudioManager
 import android.net.Uri
 import android.os.Bundle
 import android.provider.Settings
@@ -24,6 +25,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        volumeControlStream = AudioManager.STREAM_MUSIC
         enableEdgeToEdge()
         setContent {
             EscutaEGravaTheme {
@@ -35,6 +37,8 @@ class MainActivity : ComponentActivity() {
                 val ttsAvailability by viewModel.ttsAvailability.collectAsStateWithLifecycle()
                 val voices by viewModel.voices.collectAsStateWithLifecycle()
                 val selectedVoiceName by viewModel.selectedVoiceName.collectAsStateWithLifecycle()
+                val activeTtsEngineLabel by viewModel.activeTtsEngineLabel.collectAsStateWithLifecycle()
+                val hasGoogleTtsInstalled by viewModel.hasGoogleTtsInstalled.collectAsStateWithLifecycle()
                 val isPlayingSample by viewModel.isPlayingSample.collectAsStateWithLifecycle()
                 val playbackState by viewModel.playbackState.collectAsStateWithLifecycle()
                 val recordingState by viewModel.recordingState.collectAsStateWithLifecycle()
@@ -53,6 +57,8 @@ class MainActivity : ComponentActivity() {
                             ttsAvailability = ttsAvailability,
                             voices = voices,
                             selectedVoiceName = selectedVoiceName,
+                            activeTtsEngineLabel = activeTtsEngineLabel,
+                            hasGoogleTtsInstalled = hasGoogleTtsInstalled,
                             isPlayingSample = isPlayingSample,
                             onTitleChanged = viewModel::onTitleChanged,
                             onRawTextChanged = viewModel::onRawTextChanged,
@@ -68,8 +74,14 @@ class MainActivity : ComponentActivity() {
                             onDeleteScript = viewModel::deleteScript,
                             onClearBanner = viewModel::clearSetupBanner,
                             onSelectVoice = viewModel::selectVoice,
+                            onApplyNarratorStyle = viewModel::applyNarratorStyle,
                             onSpeechRateChange = viewModel::updateSpeechRate,
+                            onSpeechPitchChange = viewModel::updateSpeechPitch,
                             onPauseSecondsChange = viewModel::updatePauseSeconds,
+                            onNaturalProsodyToggle = viewModel::setNaturalProsodyEnabled,
+                            onPreferGoogleTtsToggle = viewModel::setPreferGoogleTtsEngine,
+                            onReturnVolumeChange = viewModel::updateReturnVolume,
+                            onStepReturnVolume = viewModel::stepReturnVolume,
                             onToggleSample = viewModel::toggleVoiceSample,
                             onRefreshTtsAndRoute = viewModel::refreshTtsAndRoute,
                             onOpenBluetoothSettings = ::openBluetoothSettings,
@@ -123,6 +135,8 @@ class MainActivity : ComponentActivity() {
                             onRepeatPhrase = viewModel::onStudioRepeatPhrase,
                             onPreviousPhrase = viewModel::onStudioPreviousPhrase,
                             onNextPhrase = viewModel::onStudioNextPhrase,
+                            onReturnVolumeChange = viewModel::updateReturnVolume,
+                            onStepReturnVolume = viewModel::stepReturnVolume,
                             onStartRecording = viewModel::startRecordingSession,
                             onStopRecording = viewModel::stopRecordingSession,
                             onDismissAlerts = viewModel::dismissStudioAlerts,

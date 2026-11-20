@@ -1,6 +1,7 @@
 package com.example.audio
 
 import android.content.Context
+import android.content.Intent
 import android.media.AudioAttributes
 import android.media.AudioFocusRequest
 import android.media.AudioManager
@@ -10,6 +11,7 @@ import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
 import android.speech.tts.Voice
 import android.util.Log
+import kotlin.math.roundToInt
 import com.example.model.PlaybackMode
 import com.example.model.PlaybackState
 import com.example.model.TtsAvailability
@@ -46,9 +48,16 @@ class TeleprompterTtsEngine(
     private var tts: TextToSpeech? = null
     private var voiceMap: Map<String, Voice> = emptyMap()
     private var currentSentences: List<String> = emptyList()
-    private var speechRate: Float = 0.9f
+    private var speechRate: Float = 1.0f
+    private var speechPitch: Float = 0.94f
     private var pauseSeconds: Float = 1.0f
+    private var naturalProsodyEnabled: Boolean = true
+    private var preferGoogleTtsEngine: Boolean = true
+    private var currentlyUsingGoogleEngine: Boolean = false
+    private var fallbackToDefaultAttempted: Boolean = false
     private var preferredVoiceName: String? = null
+    private var returnVolume: Float = 0.75f
+    private var effectiveTtsGain: Float = 1.0f
 
     private val generationCounter = AtomicLong(0L)
     @Volatile
@@ -63,6 +72,12 @@ class TeleprompterTtsEngine(
 
     private val _selectedVoiceName = MutableStateFlow<String?>(null)
     val selectedVoiceName: StateFlow<String?> = _selectedVoiceName.asStateFlow()
+
+    private val _activeEngineLabel = MutableStateFlow("Motor padrão do aparelho")
+    val activeEngineLabel: StateFlow<String> = _activeEngineLabel.asStateFlow()
+
+    private val _hasGoogleTtsInstalled = MutableStateFlow(false)
+    val hasGoogleTtsInstalled: StateFlow<Boolean> = _hasGoogleTtsInstalled.asStateFlow()
 
     private val _isPlayingSample = MutableStateFlow(false)
     val isPlayingSample: StateFlow<Boolean> = _isPlayingSample.asStateFlow()
@@ -95,25 +110,63 @@ class TeleprompterTtsEngine(
     }
 
     init {
+        _hasGoogleTtsInstalled.value = isGoogleTtsAvailable()
         initializeEngine()
     }
 
-    fun initializeEngine() {
+    fun initializeEngine(forceDefaultEngine: Boolean = false) {
         releaseInternalEngine()
         _availability.value = TtsAvailability.INITIALIZING
-        tts = TextToSpeech(appContext, this)
+        val googleInstalled = isGoogleTtsAvailable()
+        _hasGoogleTtsInstalled.value = googleInstalled
+        val useGoogle = !forceDefaultEngine && preferGoogleTtsEngine && googleInstalled
+        currentlyUsingGoogleEngine = useGoogle
+        fallbackToDefaultAttempted = forceDefaultEngine
+        _activeEngineLabel.value = if (useGoogle) {
+            "Serviços de fala do Google"
+        } else {
+            "Motor padrão do aparelho"
+        }
+        tts = if (useGoogle) {
+            TextToSpeech(appContext, this, GOOGLE_TTS_PACKAGE)
+        } else {
+            TextToSpeech(appContext, this)
+        }
+    }
+
+    private fun isGoogleTtsAvailable(): Boolean {
+        return try {
+            val intent = Intent(TextToSpeech.Engine.INTENT_ACTION_TTS_SERVICE)
+            val services = appContext.packageManager.queryIntentServices(intent, 0)
+            services.any { it.serviceInfo?.packageName == GOOGLE_TTS_PACKAGE }
+        } catch (_: Exception) {
+            false
+        }
     }
 
     override fun onInit(status: Int) {
         val engine = tts ?: return
         if (status != TextToSpeech.SUCCESS) {
+            if (currentlyUsingGoogleEngine && !fallbackToDefaultAttempted) {
+                Log.w(TAG, "Google TTS falhou (status=$status); tentando motor padrão do sistema")
+                initializeEngine(forceDefaultEngine = true)
+                return
+            }
             Log.e(TAG, "Falha ao inicializar motor TextToSpeech (status=$status)")
             _availability.value = TtsAvailability.ENGINE_ERROR
             return
         }
 
+        val resolvedPkg = if (currentlyUsingGoogleEngine) GOOGLE_TTS_PACKAGE else engine.defaultEngine
+        _activeEngineLabel.value = when (resolvedPkg) {
+            GOOGLE_TTS_PACKAGE -> "Serviços de fala do Google"
+            "com.samsung.SMT" -> "Samsung Text-to-Speech"
+            else -> "Motor padrão do aparelho"
+        }
+
         engine.setAudioAttributes(mediaAudioAttributes)
         engine.setSpeechRate(speechRate)
+        engine.setPitch(speechPitch)
         engine.setOnUtteranceProgressListener(utteranceListener)
 
         refreshVoicesInternal()
@@ -148,7 +201,8 @@ class TeleprompterTtsEngine(
                     !v.isNotInstalledFlag()
             }
             .sortedWith(
-                compareBy<Voice> { it.isNetworkConnectionRequired }
+                compareByDescending<Voice> { voiceNaturalnessScore(it) }
+                    .thenBy { it.isNetworkConnectionRequired }
                     .thenByDescending { it.quality }
                     .thenBy { it.name }
             )
@@ -156,13 +210,22 @@ class TeleprompterTtsEngine(
         voiceMap = ptBrVoices.associateBy { it.name }
 
         val mappedOptions = ptBrVoices.mapIndexed { idx, voice ->
+            val isHighOrNeural = isHighQualityOrNeuralVoice(voice)
             val networkTag = if (voice.isNetworkConnectionRequired) "Online" else "Offline"
+            val qualityBadge = when {
+                voice.isNetworkConnectionRequired && isHighOrNeural -> "Neural • Mais natural"
+                !voice.isNetworkConnectionRequired && voice.quality >= Voice.QUALITY_HIGH -> "Alta qualidade • Offline"
+                voice.isNetworkConnectionRequired -> "Online"
+                else -> "Compacta • Offline"
+            }
             VoiceOption(
                 name = voice.name,
-                displayName = formatFriendlyVoiceName(voice, idx + 1, networkTag),
+                displayName = formatFriendlyVoiceName(voice, idx + 1, networkTag, isHighOrNeural),
                 localeTag = voice.locale.toLanguageTag(),
                 requiresNetwork = voice.isNetworkConnectionRequired,
                 quality = voice.quality,
+                isNaturalRecommended = isHighOrNeural,
+                qualityBadge = qualityBadge,
             )
         }
         _voices.value = mappedOptions
@@ -176,13 +239,33 @@ class TeleprompterTtsEngine(
         engine.language = ptBrLocale
         _availability.value = TtsAvailability.READY
 
-        // Restore preferred voice if still available, else select best offline pt-BR voice
+        // Restore preferred voice if still available, else select the most natural pt-BR voice
         val targetName = preferredVoiceName?.takeIf { voiceMap.containsKey(it) }
             ?: mappedOptions.firstOrNull()?.name
 
         if (targetName != null) {
             applyVoice(targetName)
         }
+    }
+
+    private fun isHighQualityOrNeuralVoice(voice: Voice): Boolean {
+        val lower = voice.name.lowercase(Locale.ROOT)
+        return voice.quality >= Voice.QUALITY_HIGH ||
+            lower.contains("network") ||
+            lower.contains("neural") ||
+            lower.contains("wavenet")
+    }
+
+    private fun voiceNaturalnessScore(voice: Voice): Int {
+        val lower = voice.name.lowercase(Locale.ROOT)
+        var score = voice.quality
+        if (lower.contains("neural") || lower.contains("wavenet")) score += 250
+        if (voice.isNetworkConnectionRequired && voice.quality >= Voice.QUALITY_HIGH) score += 120
+        // High-quality local neural voice is ideal (natural + works offline)
+        if (!voice.isNetworkConnectionRequired && voice.quality >= Voice.QUALITY_HIGH) score += 180
+        // Prefer standard modern Google pt-BR voices over legacy compact ones
+        if (lower.contains("ptd") || lower.contains("pte") || lower.contains("ptb")) score += 20
+        return score
     }
 
     private fun Voice.isNotInstalledFlag(): Boolean {
@@ -194,28 +277,113 @@ class TeleprompterTtsEngine(
         return features.contains(TextToSpeech.Engine.KEY_FEATURE_NOT_INSTALLED)
     }
 
-    private fun formatFriendlyVoiceName(voice: Voice, index: Int, networkTag: String): String {
+    private fun formatFriendlyVoiceName(
+        voice: Voice,
+        index: Int,
+        networkTag: String,
+        isHighOrNeural: Boolean,
+    ): String {
         val raw = voice.name
-        val shortCode = raw.substringAfterLast('-').uppercase(Locale.ROOT)
-            .takeIf { it.length in 1..6 }
-        return if (shortCode != null) {
-            "Voz pt-BR $index ($shortCode • $networkTag)"
+        val tokens = raw.split('-', '_').filter { it.isNotBlank() }
+        val variantCode = tokens.firstOrNull { token ->
+            token.length == 3 &&
+                !token.equals("local", ignoreCase = true) &&
+                !token.equals("bra", ignoreCase = true) &&
+                !token.equals("net", ignoreCase = true)
+        }?.uppercase(Locale.ROOT)
+        val prefix = if (isHighOrNeural) "Narrador pt-BR $index" else "Voz pt-BR $index"
+        return if (variantCode != null) {
+            "$prefix ($variantCode • $networkTag)"
         } else {
-            "Voz pt-BR $index ($networkTag)"
+            "$prefix ($networkTag)"
         }
     }
 
     fun updateSettings(
         voiceName: String?,
         rate: Float,
+        pitch: Float,
         pauseSec: Float,
+        naturalProsody: Boolean,
+        preferGoogleEngine: Boolean,
     ) {
+        val enginePreferenceChanged = preferGoogleTtsEngine != preferGoogleEngine
         preferredVoiceName = voiceName
-        speechRate = rate.coerceIn(0.6f, 1.2f)
+        speechRate = rate.coerceIn(0.6f, 1.3f)
+        speechPitch = pitch.coerceIn(0.75f, 1.2f)
         pauseSeconds = pauseSec.coerceIn(0f, 5.0f)
+        naturalProsodyEnabled = naturalProsody
+        preferGoogleTtsEngine = preferGoogleEngine
+
+        if (enginePreferenceChanged && _hasGoogleTtsInstalled.value) {
+            initializeEngine()
+            return
+        }
+
         tts?.setSpeechRate(speechRate)
+        tts?.setPitch(speechPitch)
         if (voiceName != null && voiceMap.containsKey(voiceName)) {
             applyVoice(voiceName)
+        }
+    }
+
+    fun readSystemMediaVolumeNormalized(): Float {
+        return try {
+            val max = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC).coerceAtLeast(1)
+            val current = audioManager.getStreamVolume(AudioManager.STREAM_MUSIC).coerceIn(0, max)
+            (current.toFloat() / max.toFloat()).coerceIn(0f, 1f)
+        } catch (_: Exception) {
+            returnVolume
+        }
+    }
+
+    /**
+     * Adjusts return audio volume in real time via STREAM_MUSIC + ultra-quiet TTS gain attenuation.
+     * Safe to call even mid-recording or mid-utterance without interrupting video or speech.
+     */
+    fun setReturnVolume(volume: Float, applyToSystemStream: Boolean = true) {
+        val clamped = volume.coerceIn(0f, 1f)
+        returnVolume = clamped
+
+        if (clamped <= 0.005f) {
+            effectiveTtsGain = 0f
+            if (applyToSystemStream) {
+                trySetStreamVolume(0)
+            }
+            return
+        }
+
+        val maxSteps = try {
+            audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC).coerceAtLeast(1)
+        } catch (_: Exception) {
+            15
+        }
+
+        // For ultra-low levels (1%..15%), keep hardware stream at step 1 and smoothly attenuate TTS gain
+        // so Bluetooth earbuds can stay whisper-quiet without leaking into the microphone.
+        if (clamped < 0.15f) {
+            effectiveTtsGain = (clamped / 0.15f).coerceIn(0.12f, 1f)
+            if (applyToSystemStream) {
+                trySetStreamVolume(1.coerceAtMost(maxSteps))
+            }
+        } else {
+            effectiveTtsGain = 1.0f
+            if (applyToSystemStream) {
+                val targetStep = (clamped * maxSteps).roundToInt().coerceIn(1, maxSteps)
+                trySetStreamVolume(targetStep)
+            }
+        }
+    }
+
+    private fun trySetStreamVolume(targetStep: Int) {
+        try {
+            audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, targetStep, 0)
+        } catch (e: SecurityException) {
+            // Do-Not-Disturb policy on some OEMs can block stream writes; fall back to TTS gain
+            Log.w(TAG, "Sem permissão para alterar volume do sistema; usando atenuação interna")
+            effectiveTtsGain = returnVolume.coerceIn(0f, 1f)
+        } catch (e: Exception) {
+            Log.w(TAG, "Falha ao ajustar volume do sistema: ${e.javaClass.simpleName}")
         }
     }
 
@@ -434,10 +602,13 @@ class TeleprompterTtsEngine(
     private fun speakInternal(text: String, utteranceId: String): Int {
         val engine = tts ?: return TextToSpeech.ERROR
         engine.setSpeechRate(speechRate)
+        engine.setPitch(speechPitch)
+        val spokenText = NarratorProsodyFormatter.formatForNarrator(text, naturalProsodyEnabled)
         val params = Bundle().apply {
             putInt(TextToSpeech.Engine.KEY_PARAM_STREAM, AudioManager.STREAM_MUSIC)
+            putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, effectiveTtsGain.coerceIn(0f, 1f))
         }
-        return engine.speak(text, TextToSpeech.QUEUE_FLUSH, params, utteranceId)
+        return engine.speak(spokenText, TextToSpeech.QUEUE_FLUSH, params, utteranceId)
     }
 
     private val utteranceListener = object : UtteranceProgressListener() {
@@ -609,5 +780,6 @@ class TeleprompterTtsEngine(
 
     companion object {
         private const val TAG = "TeleprompterTtsEngine"
+        private const val GOOGLE_TTS_PACKAGE = "com.google.android.tts"
     }
 }

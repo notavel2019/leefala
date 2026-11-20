@@ -34,12 +34,16 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.BluetoothAudio
 import androidx.compose.material.icons.filled.Cameraswitch
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Headphones
+import androidx.compose.material.icons.filled.Remove
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.VideocamOff
+import androidx.compose.material.icons.filled.VolumeDown
+import androidx.compose.material.icons.filled.VolumeOff
 import androidx.compose.material.icons.filled.VolumeUp
 import androidx.compose.material.icons.filled.WarningAmber
 import androidx.compose.material3.AlertDialog
@@ -50,6 +54,8 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Slider
+import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -143,6 +149,8 @@ fun RecordingStudioScreen(
     onRepeatPhrase: () -> Unit,
     onPreviousPhrase: () -> Unit,
     onNextPhrase: () -> Unit,
+    onReturnVolumeChange: (Float) -> Unit,
+    onStepReturnVolume: (Float) -> Unit,
     onStartRecording: (Boolean) -> Unit,
     onStopRecording: () -> Unit,
     onDismissAlerts: () -> Unit,
@@ -199,6 +207,7 @@ fun RecordingStudioScreen(
 
     var showExitRecordingDialog by remember { mutableStateOf(false) }
     var showCameraSettingsSheet by remember { mutableStateOf(false) }
+    var showReturnVolumeBar by remember { mutableStateOf(false) }
     var focusTapOffset by remember { mutableStateOf<Offset?>(null) }
 
     LaunchedEffect(focusTapOffset) {
@@ -319,8 +328,10 @@ fun RecordingStudioScreen(
                     recordingState = recordingState,
                     audioRoute = audioRoute,
                     activeAperture = cameraSettings.selectedAperture ?: cameraCapabilities.availableApertures.firstOrNull(),
+                    isVolumeBarOpen = showReturnVolumeBar,
                     onBack = requestExit,
                     onOpenCameraSettings = { showCameraSettingsSheet = true },
+                    onToggleVolumeBar = { showReturnVolumeBar = !showReturnVolumeBar },
                     onToggleCameraLens = onToggleCameraLens,
                 )
 
@@ -458,24 +469,44 @@ fun RecordingStudioScreen(
                 }
             }
 
-            // Layer 5: Quick Zoom / Lens Strip + Bottom independent Reading + Recording dock
+            // Layer 5: Live Return Volume Bar + Quick Zoom/Volume Strip + Bottom Reading & Recording dock
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
                     .align(Alignment.BottomCenter),
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
-                if (cameraCapabilities.maxZoomRatio > cameraCapabilities.minZoomRatio + 0.05f) {
-                    val zoomPresets = listOf(0.5f, 0.6f, 1.0f, 2.0f, 3.0f).filter {
+                AnimatedVisibility(visible = showReturnVolumeBar) {
+                    StudioReturnVolumeBar(
+                        volume = preferences.returnVolume,
+                        audioRoute = audioRoute,
+                        onVolumeChange = onReturnVolumeChange,
+                        onStepVolume = onStepReturnVolume,
+                        onClose = { showReturnVolumeBar = false },
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
+                    )
+                }
+
+                val zoomPresets = if (cameraCapabilities.maxZoomRatio > cameraCapabilities.minZoomRatio + 0.05f) {
+                    listOf(0.5f, 0.6f, 1.0f, 2.0f, 3.0f).filter {
                         it >= cameraCapabilities.minZoomRatio - 0.02f &&
                             it <= cameraCapabilities.maxZoomRatio + 0.02f
                     }
+                } else {
+                    emptyList()
+                }
+                val volPercent = (preferences.returnVolume * 100f).roundToInt().coerceIn(0, 100)
+
+                Row(
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
                     if (zoomPresets.size >= 2) {
                         Surface(
                             color = Color.Black.copy(alpha = 0.48f),
                             shape = RoundedCornerShape(999.dp),
                             border = BorderStroke(1.dp, Color.White.copy(alpha = 0.14f)),
-                            modifier = Modifier.padding(bottom = 4.dp),
                         ) {
                             Row(
                                 modifier = Modifier.padding(horizontal = 6.dp, vertical = 4.dp),
@@ -503,6 +534,42 @@ fun RecordingStudioScreen(
                                     }
                                 }
                             }
+                        }
+                    }
+
+                    // Always-accessible Return Audio Volume toggle pill (works even while recording)
+                    Surface(
+                        onClick = { showReturnVolumeBar = !showReturnVolumeBar },
+                        color = if (showReturnVolumeBar) StudioTealOnDark else Color.Black.copy(alpha = 0.56f),
+                        shape = RoundedCornerShape(999.dp),
+                        border = BorderStroke(
+                            1.dp,
+                            if (showReturnVolumeBar) StudioTealOnDark else Color.White.copy(alpha = 0.2f),
+                        ),
+                        modifier = Modifier.testTag("studio_volume_pill"),
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(5.dp),
+                        ) {
+                            Icon(
+                                imageVector = when {
+                                    volPercent == 0 -> Icons.Filled.VolumeOff
+                                    volPercent < 45 -> Icons.Filled.VolumeDown
+                                    else -> Icons.Filled.VolumeUp
+                                },
+                                contentDescription = "Volume do retorno",
+                                tint = if (showReturnVolumeBar) Color(0xFF0B1116) else Color.White,
+                                modifier = Modifier.size(16.dp),
+                            )
+                            Text(
+                                text = if (volPercent == 0) "Mudo" else "$volPercent%",
+                                fontFamily = JetBrainsMonoFamily,
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = if (showReturnVolumeBar) Color(0xFF0B1116) else Color.White,
+                            )
                         }
                     }
                 }
@@ -616,8 +683,10 @@ private fun StudioTopBar(
     recordingState: RecordingState,
     audioRoute: AudioRouteInfo,
     activeAperture: Float?,
+    isVolumeBarOpen: Boolean,
     onBack: () -> Unit,
     onOpenCameraSettings: () -> Unit,
+    onToggleVolumeBar: () -> Unit,
     onToggleCameraLens: () -> Unit,
 ) {
     val isLocked = recordingState.isSessionLocked
@@ -742,10 +811,11 @@ private fun StudioTopBar(
             }
         }
 
-        // Compact audio route status icon pill
+        // Compact audio route status icon pill (tapping opens live return volume control)
         val routeColor = if (audioRoute.isHeadsetSafe) RouteEmerald else RouteAmber
         Surface(
-            color = Color.Black.copy(alpha = 0.6f),
+            onClick = onToggleVolumeBar,
+            color = if (isVolumeBarOpen) routeColor.copy(alpha = 0.35f) else Color.Black.copy(alpha = 0.6f),
             shape = CircleShape,
             border = BorderStroke(1.5.dp, routeColor),
         ) {
@@ -762,7 +832,7 @@ private fun StudioTopBar(
                         AudioRouteKind.WIRED_HEADSET -> Icons.Filled.Headphones
                         else -> Icons.Filled.VolumeUp
                     },
-                    contentDescription = audioRoute.description,
+                    contentDescription = "${audioRoute.description} — ajustar volume do retorno",
                     tint = if (audioRoute.isHeadsetSafe) Color(0xFF6EE7B7) else Color(0xFFFCD34D),
                     modifier = Modifier.size(22.dp),
                 )
@@ -789,6 +859,126 @@ private fun StudioTopBar(
                     )
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun StudioReturnVolumeBar(
+    volume: Float,
+    audioRoute: AudioRouteInfo,
+    onVolumeChange: (Float) -> Unit,
+    onStepVolume: (Float) -> Unit,
+    onClose: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val percent = (volume * 100f).roundToInt().coerceIn(0, 100)
+    Surface(
+        color = Color(0xE00F172A),
+        shape = RoundedCornerShape(18.dp),
+        border = BorderStroke(1.dp, StudioTealOnDark.copy(alpha = 0.45f)),
+        modifier = modifier
+            .fillMaxWidth()
+            .testTag("studio_return_volume_bar"),
+    ) {
+        Column(
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                Text(
+                    text = "Volume do retorno • ${if (percent == 0) "Mudo" else "$percent%"}",
+                    fontFamily = JetBrainsMonoFamily,
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = StudioTealOnDark,
+                )
+                IconButton(
+                    onClick = onClose,
+                    modifier = Modifier.size(32.dp),
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.Close,
+                        contentDescription = "Fechar controle de volume",
+                        tint = Color.White.copy(alpha = 0.8f),
+                        modifier = Modifier.size(16.dp),
+                    )
+                }
+            }
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                IconButton(
+                    onClick = { onVolumeChange(if (volume > 0.01f) 0f else 0.70f) },
+                    modifier = Modifier
+                        .size(44.dp)
+                        .testTag("studio_volume_mute_button"),
+                ) {
+                    Icon(
+                        imageVector = when {
+                            percent == 0 -> Icons.Filled.VolumeOff
+                            percent < 45 -> Icons.Filled.VolumeDown
+                            else -> Icons.Filled.VolumeUp
+                        },
+                        contentDescription = "Silenciar retorno",
+                        tint = Color.White,
+                    )
+                }
+
+                IconButton(
+                    onClick = { onStepVolume(-0.10f) },
+                    modifier = Modifier
+                        .size(44.dp)
+                        .testTag("studio_volume_down_button"),
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.Remove,
+                        contentDescription = "Diminuir volume do retorno",
+                        tint = Color.White,
+                    )
+                }
+
+                Slider(
+                    value = volume,
+                    onValueChange = onVolumeChange,
+                    valueRange = 0f..1f,
+                    colors = SliderDefaults.colors(
+                        thumbColor = StudioTealOnDark,
+                        activeTrackColor = StudioTealOnDark,
+                        inactiveTrackColor = Color.White.copy(alpha = 0.25f),
+                    ),
+                    modifier = Modifier
+                        .weight(1f)
+                        .testTag("studio_volume_slider"),
+                )
+
+                IconButton(
+                    onClick = { onStepVolume(0.10f) },
+                    modifier = Modifier
+                        .size(44.dp)
+                        .testTag("studio_volume_up_button"),
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.Add,
+                        contentDescription = "Aumentar volume do retorno",
+                        tint = Color.White,
+                    )
+                }
+            }
+
+            Text(
+                text = audioRoute.description,
+                fontSize = 11.sp,
+                color = Color.White.copy(alpha = 0.7f),
+                maxLines = 1,
+            )
         }
     }
 }

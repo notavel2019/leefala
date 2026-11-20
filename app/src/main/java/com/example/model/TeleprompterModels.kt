@@ -17,7 +17,53 @@ data class VoiceOption(
     val localeTag: String,
     val requiresNetwork: Boolean,
     val quality: Int,
+    val isNaturalRecommended: Boolean = false,
+    val qualityBadge: String = "",
 )
+
+enum class NarratorStyle(
+    val label: String,
+    val subtitle: String,
+    val speechRate: Float,
+    val speechPitch: Float,
+    val pauseSeconds: Float,
+) {
+    NARRATOR_FLUID(
+        label = "Narrador fluido",
+        subtitle = "Tom caloroso e cadência natural",
+        speechRate = 1.0f,
+        speechPitch = 0.94f,
+        pauseSeconds = 0.8f,
+    ),
+    ANNOUNCER_DEEP(
+        label = "Locutor grave",
+        subtitle = "Mais firme e envolvente",
+        speechRate = 0.95f,
+        speechPitch = 0.86f,
+        pauseSeconds = 1.0f,
+    ),
+    CONVERSATIONAL(
+        label = "Conversa leve",
+        subtitle = "Ágil e espontâneo",
+        speechRate = 1.05f,
+        speechPitch = 1.02f,
+        pauseSeconds = 0.5f,
+    ),
+    DIDACTIC(
+        label = "Didático",
+        subtitle = "Calmo e bem articulado",
+        speechRate = 0.88f,
+        speechPitch = 0.96f,
+        pauseSeconds = 1.5f,
+    ),
+    CUSTOM(
+        label = "Personalizado",
+        subtitle = "Ajuste manual",
+        speechRate = 1.0f,
+        speechPitch = 0.94f,
+        pauseSeconds = 1.0f,
+    ),
+}
 
 enum class AudioRouteKind {
     BLUETOOTH_MEDIA,
@@ -36,8 +82,13 @@ data class AudioRouteInfo(
 
 data class TeleprompterPreferences(
     val selectedVoiceName: String? = null,
-    val speechRate: Float = 0.9f,
+    val speechRate: Float = 1.0f,
+    val speechPitch: Float = 0.94f,
     val pauseSeconds: Float = 1.0f,
+    val narratorStyle: NarratorStyle = NarratorStyle.NARRATOR_FLUID,
+    val naturalProsodyEnabled: Boolean = true,
+    val preferGoogleTtsEngine: Boolean = true,
+    val returnVolume: Float = 0.75f,
     val overlayFontSizeSp: Float = 19f,
     val panelHeightMode: PanelHeightMode = PanelHeightMode.MEDIUM,
     val preferFrontCamera: Boolean = true,

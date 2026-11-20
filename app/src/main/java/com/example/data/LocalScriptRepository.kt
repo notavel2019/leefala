@@ -93,10 +93,18 @@ class LocalScriptRepository(context: Context) {
         val heightName = prefs.getString(KEY_PANEL_HEIGHT, PanelHeightMode.MEDIUM.name)
         val heightMode = PanelHeightMode.entries.firstOrNull { it.name == heightName }
             ?: PanelHeightMode.MEDIUM
+        val styleName = prefs.getString(KEY_NARRATOR_STYLE, com.example.model.NarratorStyle.NARRATOR_FLUID.name)
+        val narratorStyle = com.example.model.NarratorStyle.entries.firstOrNull { it.name == styleName }
+            ?: com.example.model.NarratorStyle.NARRATOR_FLUID
         return TeleprompterPreferences(
             selectedVoiceName = prefs.getString(KEY_VOICE_NAME, null),
-            speechRate = prefs.getFloat(KEY_SPEECH_RATE, 0.9f).coerceIn(0.6f, 1.2f),
+            speechRate = prefs.getFloat(KEY_SPEECH_RATE, 1.0f).coerceIn(0.6f, 1.3f),
+            speechPitch = prefs.getFloat(KEY_SPEECH_PITCH, 0.94f).coerceIn(0.75f, 1.2f),
             pauseSeconds = prefs.getFloat(KEY_PAUSE_SECONDS, 1.0f).coerceIn(0f, 5.0f),
+            narratorStyle = narratorStyle,
+            naturalProsodyEnabled = prefs.getBoolean(KEY_NATURAL_PROSODY, true),
+            preferGoogleTtsEngine = prefs.getBoolean(KEY_PREFER_GOOGLE_TTS, true),
+            returnVolume = prefs.getFloat(KEY_RETURN_VOLUME, 0.75f).coerceIn(0f, 1f),
             overlayFontSizeSp = prefs.getFloat(KEY_OVERLAY_FONT_SP, 19f).coerceIn(14f, 28f),
             panelHeightMode = heightMode,
             preferFrontCamera = prefs.getBoolean(KEY_PREFER_FRONT_CAMERA, true),
@@ -107,7 +115,12 @@ class LocalScriptRepository(context: Context) {
         prefs.edit()
             .putString(KEY_VOICE_NAME, preferences.selectedVoiceName)
             .putFloat(KEY_SPEECH_RATE, preferences.speechRate)
+            .putFloat(KEY_SPEECH_PITCH, preferences.speechPitch)
             .putFloat(KEY_PAUSE_SECONDS, preferences.pauseSeconds)
+            .putString(KEY_NARRATOR_STYLE, preferences.narratorStyle.name)
+            .putBoolean(KEY_NATURAL_PROSODY, preferences.naturalProsodyEnabled)
+            .putBoolean(KEY_PREFER_GOOGLE_TTS, preferences.preferGoogleTtsEngine)
+            .putFloat(KEY_RETURN_VOLUME, preferences.returnVolume)
             .putFloat(KEY_OVERLAY_FONT_SP, preferences.overlayFontSizeSp)
             .putString(KEY_PANEL_HEIGHT, preferences.panelHeightMode.name)
             .putBoolean(KEY_PREFER_FRONT_CAMERA, preferences.preferFrontCamera)
@@ -126,7 +139,12 @@ class LocalScriptRepository(context: Context) {
         private const val KEY_LAST_SCRIPT_ID = "last_script_id"
         private const val KEY_VOICE_NAME = "voice_name"
         private const val KEY_SPEECH_RATE = "speech_rate"
+        private const val KEY_SPEECH_PITCH = "speech_pitch"
         private const val KEY_PAUSE_SECONDS = "pause_seconds"
+        private const val KEY_NARRATOR_STYLE = "narrator_style"
+        private const val KEY_NATURAL_PROSODY = "natural_prosody"
+        private const val KEY_PREFER_GOOGLE_TTS = "prefer_google_tts"
+        private const val KEY_RETURN_VOLUME = "return_volume"
         private const val KEY_OVERLAY_FONT_SP = "overlay_font_sp"
         private const val KEY_PANEL_HEIGHT = "panel_height"
         private const val KEY_PREFER_FRONT_CAMERA = "prefer_front_camera"

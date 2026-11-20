@@ -14,6 +14,7 @@ import com.example.model.AppScreen
 import com.example.model.AudioRouteInfo
 import com.example.model.CameraHardwareCapabilities
 import com.example.model.CameraSettingsState
+import com.example.model.NarratorStyle
 import com.example.model.PanelHeightMode
 import com.example.model.PlaybackState
 import com.example.model.RecordingState
@@ -110,6 +111,8 @@ class TeleprompterViewModel(application: Application) : AndroidViewModel(applica
     val ttsAvailability: StateFlow<TtsAvailability> = ttsEngine.availability
     val voices: StateFlow<List<VoiceOption>> = ttsEngine.voices
     val selectedVoiceName: StateFlow<String?> = ttsEngine.selectedVoiceName
+    val activeTtsEngineLabel: StateFlow<String> = ttsEngine.activeEngineLabel
+    val hasGoogleTtsInstalled: StateFlow<Boolean> = ttsEngine.hasGoogleTtsInstalled
     val isPlayingSample: StateFlow<Boolean> = ttsEngine.isPlayingSample
     val playbackState: StateFlow<PlaybackState> = ttsEngine.playbackState
     val audioRoute: StateFlow<AudioRouteInfo> = audioRouteMonitor.routeInfo
@@ -123,8 +126,12 @@ class TeleprompterViewModel(application: Application) : AndroidViewModel(applica
         ttsEngine.updateSettings(
             voiceName = prefs.selectedVoiceName,
             rate = prefs.speechRate,
+            pitch = prefs.speechPitch,
             pauseSec = prefs.pauseSeconds,
+            naturalProsody = prefs.naturalProsodyEnabled,
+            preferGoogleEngine = prefs.preferGoogleTtsEngine,
         )
+        ttsEngine.setReturnVolume(prefs.returnVolume, applyToSystemStream = false)
         loadPersistedScripts()
     }
 
@@ -380,40 +387,108 @@ class TeleprompterViewModel(application: Application) : AndroidViewModel(applica
         _setupState.update { it.copy(statusBanner = null) }
     }
 
-    // --- Voice & Preferences ---
+    // --- Voice, Narrator Style & Return Volume ---
+
+    private fun pushTtsPreferences(updated: TeleprompterPreferences) {
+        _preferences.value = updated
+        repository.savePreferences(updated)
+        ttsEngine.updateSettings(
+            voiceName = updated.selectedVoiceName,
+            rate = updated.speechRate,
+            pitch = updated.speechPitch,
+            pauseSec = updated.pauseSeconds,
+            naturalProsody = updated.naturalProsodyEnabled,
+            preferGoogleEngine = updated.preferGoogleTtsEngine,
+        )
+    }
 
     fun selectVoice(voiceName: String) {
         if (_recordingState.value.isSessionLocked) return
-        val updated = _preferences.value.copy(selectedVoiceName = voiceName)
-        _preferences.value = updated
-        repository.savePreferences(updated)
-        ttsEngine.updateSettings(voiceName, updated.speechRate, updated.pauseSeconds)
+        pushTtsPreferences(_preferences.value.copy(selectedVoiceName = voiceName))
+    }
+
+    fun applyNarratorStyle(style: NarratorStyle) {
+        if (_recordingState.value.isSessionLocked) return
+        val updated = _preferences.value.copy(
+            narratorStyle = style,
+            speechRate = style.speechRate,
+            speechPitch = style.speechPitch,
+            pauseSeconds = style.pauseSeconds,
+        )
+        pushTtsPreferences(updated)
     }
 
     fun updateSpeechRate(rate: Float) {
         if (_recordingState.value.isSessionLocked) return
-        // Snap cleanly to 0.05 increments between 0.6 and 1.2
-        val snapped = ((rate * 20f).roundToInt() / 20f).coerceIn(0.6f, 1.2f)
-        val updated = _preferences.value.copy(speechRate = snapped)
-        _preferences.value = updated
-        repository.savePreferences(updated)
-        ttsEngine.updateSettings(updated.selectedVoiceName, snapped, updated.pauseSeconds)
+        // Snap cleanly to 0.05 increments between 0.6 and 1.3
+        val snapped = ((rate * 20f).roundToInt() / 20f).coerceIn(0.6f, 1.3f)
+        pushTtsPreferences(
+            _preferences.value.copy(
+                speechRate = snapped,
+                narratorStyle = NarratorStyle.CUSTOM,
+            )
+        )
+    }
+
+    fun updateSpeechPitch(pitch: Float) {
+        if (_recordingState.value.isSessionLocked) return
+        // Snap cleanly to 0.02 increments between 0.75 and 1.20
+        val snapped = ((pitch * 50f).roundToInt() / 50f).coerceIn(0.75f, 1.2f)
+        pushTtsPreferences(
+            _preferences.value.copy(
+                speechPitch = snapped,
+                narratorStyle = NarratorStyle.CUSTOM,
+            )
+        )
     }
 
     fun updatePauseSeconds(seconds: Float) {
         if (_recordingState.value.isSessionLocked) return
         // Exact 0.5 second steps from 0.0 to 5.0
         val snapped = ((seconds * 2f).roundToInt() / 2f).coerceIn(0f, 5.0f)
-        val updated = _preferences.value.copy(pauseSeconds = snapped)
+        pushTtsPreferences(
+            _preferences.value.copy(
+                pauseSeconds = snapped,
+                narratorStyle = NarratorStyle.CUSTOM,
+            )
+        )
+    }
+
+    fun setNaturalProsodyEnabled(enabled: Boolean) {
+        if (_recordingState.value.isSessionLocked) return
+        pushTtsPreferences(_preferences.value.copy(naturalProsodyEnabled = enabled))
+    }
+
+    fun setPreferGoogleTtsEngine(enabled: Boolean) {
+        if (_recordingState.value.isSessionLocked) return
+        pushTtsPreferences(
+            _preferences.value.copy(
+                preferGoogleTtsEngine = enabled,
+                selectedVoiceName = null,
+            )
+        )
+    }
+
+    /**
+     * Always enabled (even during active video recording) so the speaker can adjust
+     * earpiece/return volume live without interrupting recording or speech.
+     */
+    fun updateReturnVolume(volume: Float) {
+        val snapped = ((volume * 100f).roundToInt() / 100f).coerceIn(0f, 1f)
+        val updated = _preferences.value.copy(returnVolume = snapped)
         _preferences.value = updated
         repository.savePreferences(updated)
-        ttsEngine.updateSettings(updated.selectedVoiceName, updated.speechRate, snapped)
+        ttsEngine.setReturnVolume(snapped, applyToSystemStream = true)
+    }
+
+    fun stepReturnVolume(delta: Float) {
+        updateReturnVolume(_preferences.value.returnVolume + delta)
     }
 
     fun toggleVoiceSample() {
         ttsEngine.toggleSample(
-            "Olá! Esta é a voz guia do Escuta e Grava. " +
-                "Confira se o som está claro no seu fone antes de iniciar a gravação."
+            "Olá! Respire fundo, olhe para a lente e fale no seu ritmo natural. " +
+                "Com esse ajuste de narrador, o retorno no seu fone fica muito mais suave e fluido."
         )
     }
 
