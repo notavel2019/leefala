@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Bold studio headphones arc + central recording dot inside 66dp safe zone (21..87) -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M54,28 C39.64,28 28,39.64 28,54 L28,67 C28,70.87 31.13,74 35,74 L39,74 C40.66,74 42,72.66 42,71 L42,57 C42,55.34 40.66,54 39,54 L34,54 C34,42.95 42.95,34 54,34 C65.05,34 74,42.95 74,54 L69,54 C67.34,54 66,55.34 66,57 L66,71 C66,72.66 67.34,74 69,74 L73,74 C76.87,74 80,70.87 80,67 L80,54 C80,39.64 68.36,28 54,28 Z" />
+    <!-- Subtle camera / REC pulse center -->
+    <path
+        android:fillColor="#F87171"
+        android:pathData="M54,53 m-8.5,0 a8.5,8.5 0 1,0 17,0 a8.5,8.5 0 1,0 -17,0" />
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M47,69 L61,69 C62.1,69 63,69.9 63,71 C63,72.1 62.1,73 61,73 L47,73 C45.9,73 45,72.1 45,71 C45,69.9 45.9,69 47,69 Z" />
+</vector>

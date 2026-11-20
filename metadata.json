@@ -1,0 +1,6 @@
+{
+  "name": "Escuta e Grava",
+  "description": "Teleprompter auditivo nativo com câmera integrada, leitura guiada por fone Bluetooth em pt-BR e repetição instantânea por toque durante a gravação.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

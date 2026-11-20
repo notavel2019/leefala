@@ -1,0 +1,20 @@
+<resources>
+    <string name="app_name">Escuta e Grava</string>
+    <string name="cd_saved_scripts">Roteiros salvos</string>
+    <string name="cd_back">Voltar</string>
+    <string name="cd_switch_camera">Alternar câmera</string>
+    <string name="cd_toggle_panel">Recolher ou expandir roteiro</string>
+    <string name="cd_panel_height">Ajustar altura do roteiro</string>
+    <string name="cd_font_smaller">Diminuir fonte</string>
+    <string name="cd_font_larger">Aumentar fonte</string>
+    <string name="cd_previous_phrase">Frase anterior</string>
+    <string name="cd_repeat_phrase">Repetir frase</string>
+    <string name="cd_play_pause_reading">Iniciar ou pausar leitura</string>
+    <string name="cd_next_phrase">Próxima frase</string>
+    <string name="cd_record_toggle">Gravar ou finalizar gravação</string>
+    <string name="cd_delete_script">Excluir roteiro</string>
+    <string name="cd_edit_phrase">Editar frase</string>
+    <string name="cd_split_phrase">Dividir frase</string>
+    <string name="cd_merge_phrase">Unir com a próxima frase</string>
+    <string name="cd_audio_route">Status da rota de áudio</string>
+</resources>
