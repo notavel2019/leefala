@@ -112,13 +112,22 @@ class CameraRecorderController(context: Context) {
                         }
                     }
 
+                    // Virtual Android / Cuttlefish emulators lack valid hardware EncoderProfiles and log
+                    // repeated CapabilitiesByQuality/MediaProfiles errors if VideoCapture is bound.
+                    // Bind Preview-only cleanly on emulators; real physical devices bind full VideoCapture.
+                    val isEmulator = isAndroidEmulator()
+
                     // Pre-check real EncoderProfiles via CameraManager/CamcorderProfile before touching Recorder
-                    var supportedQualities = queryEncoderQualitiesForCameraId(
-                        chosenLens?.cameraId ?: findCameraIdForFacing(actualIsFront)
-                    )
+                    var supportedQualities = if (isEmulator) {
+                        emptyList()
+                    } else {
+                        queryEncoderQualitiesForCameraId(
+                            chosenLens?.cameraId ?: findCameraIdForFacing(actualIsFront)
+                        )
+                    }
 
                     // If chosen lens has no video encoder profiles, check if another lens does
-                    if (supportedQualities.isEmpty() && settings.selectedCameraId == null && allLenses.size > 1) {
+                    if (!isEmulator && supportedQualities.isEmpty() && settings.selectedCameraId == null && allLenses.size > 1) {
                         val altLens = allLenses.firstOrNull { candidate ->
                             candidate.cameraId != chosenLens?.cameraId &&
                                 queryEncoderQualitiesForCameraId(candidate.cameraId).isNotEmpty()
@@ -157,7 +166,9 @@ class CameraRecorderController(context: Context) {
                                 isFrontCamera = actualIsFront,
                                 hasOtherCamera = allLenses.size > 1 || (hasFront && hasBack),
                                 videoCaptureSupported = false,
-                                warningMessage = "Prévia da câmera ativa, mas este emulador não disponibiliza perfis de gravação de vídeo. Instale o APK em um celular Android físico para gravar.",
+                                warningMessage = if (isEmulator) null else {
+                                    "Prévia da câmera ativa, mas esta lente não informou perfis de gravação de vídeo."
+                                },
                                 capabilities = caps,
                                 boundCameraId = chosenLens?.cameraId,
                             )
@@ -560,26 +571,58 @@ class CameraRecorderController(context: Context) {
     }
 
     private fun hasEncoderProfile(cameraId: String, profileQuality: Int): Boolean {
+        val numericId = cameraId.toIntOrNull() ?: return false
+        val exists = try {
+            @Suppress("DEPRECATION")
+            CamcorderProfile.hasProfile(numericId, profileQuality)
+        } catch (_: Exception) {
+            false
+        }
+        if (!exists) return false
+
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            try {
+            return try {
                 val all = CamcorderProfile.getAll(cameraId, profileQuality)
-                if (all != null && all.videoProfiles.any { it != null && it.width > 0 && it.height > 0 }) {
-                    return true
-                }
+                all != null && all.videoProfiles.any { it != null && it.width > 0 && it.height > 0 }
             } catch (_: Exception) {
+                true
             }
         }
-        val numericId = cameraId.toIntOrNull()
-        if (numericId != null) {
-            try {
-                @Suppress("DEPRECATION")
-                if (CamcorderProfile.hasProfile(numericId, profileQuality)) {
-                    return true
-                }
-            } catch (_: Exception) {
-            }
-        }
-        return false
+        return true
+    }
+
+    private fun isAndroidEmulator(): Boolean {
+        val fp = Build.FINGERPRINT.lowercase(Locale.ROOT)
+        val model = Build.MODEL.lowercase(Locale.ROOT)
+        val product = Build.PRODUCT.lowercase(Locale.ROOT)
+        val hardware = Build.HARDWARE.lowercase(Locale.ROOT)
+        val board = Build.BOARD.lowercase(Locale.ROOT)
+        val brand = Build.BRAND.lowercase(Locale.ROOT)
+        val device = Build.DEVICE.lowercase(Locale.ROOT)
+        val manufacturer = Build.MANUFACTURER.lowercase(Locale.ROOT)
+        return fp.startsWith("generic") ||
+            fp.startsWith("unknown") ||
+            fp.contains("emulator") ||
+            hardware.contains("goldfish") ||
+            hardware.contains("ranchu") ||
+            hardware.contains("cutf") ||
+            board.contains("goldfish") ||
+            board.contains("ranchu") ||
+            board.contains("cutf") ||
+            model.contains("emulator") ||
+            model.contains("android sdk built for") ||
+            model.contains("cuttlefish") ||
+            product.contains("sdk_gphone") ||
+            product.contains("google_sdk") ||
+            product.contains("emulator") ||
+            product.contains("simulator") ||
+            product.contains("vsoc") ||
+            product.contains("aosp_cf") ||
+            product.startsWith("cf_") ||
+            device.contains("vsoc") ||
+            device.startsWith("emu64") ||
+            manufacturer.contains("genymotion") ||
+            (brand.startsWith("generic") && device.startsWith("generic"))
     }
 
     fun startRecording(

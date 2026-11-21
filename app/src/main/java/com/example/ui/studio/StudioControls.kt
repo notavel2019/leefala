@@ -19,6 +19,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.FiberManualRecord
 import androidx.compose.material.icons.filled.Hearing
+import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
@@ -58,6 +59,7 @@ fun StudioControls(
     recordingState: RecordingState,
     cameraReady: Boolean,
     hasSentences: Boolean,
+    isProUnlocked: Boolean,
     onPreviousPhrase: () -> Unit,
     onRepeatPhrase: () -> Unit,
     onPlayPauseReading: () -> Unit,
@@ -178,7 +180,7 @@ fun StudioControls(
             if (!isRecordingActive && !isFinalizing) {
                 OutlinedButton(
                     onClick = onStartShortTest,
-                    enabled = cameraReady,
+                    enabled = if (isProUnlocked) cameraReady else true,
                     border = BorderStroke(1.dp, Color.White.copy(alpha = 0.45f)),
                     colors = ButtonDefaults.outlinedButtonColors(
                         containerColor = Color.Black.copy(alpha = 0.45f),
@@ -191,7 +193,7 @@ fun StudioControls(
                         .testTag("short_test_record_button"),
                 ) {
                     Icon(
-                        imageVector = Icons.Filled.Hearing,
+                        imageVector = if (isProUnlocked) Icons.Filled.Hearing else Icons.Filled.Lock,
                         contentDescription = null,
                         modifier = Modifier.size(18.dp),
                     )
@@ -205,9 +207,9 @@ fun StudioControls(
 
                 Button(
                     onClick = onStartRecording,
-                    enabled = cameraReady,
+                    enabled = if (isProUnlocked) cameraReady else true,
                     colors = ButtonDefaults.buttonColors(
-                        containerColor = RecCrimson,
+                        containerColor = if (isProUnlocked) RecCrimson else StudioTeal,
                         contentColor = Color.White,
                     ),
                     shape = RoundedCornerShape(16.dp),
@@ -217,13 +219,13 @@ fun StudioControls(
                         .testTag("start_recording_button"),
                 ) {
                     Icon(
-                        imageVector = Icons.Filled.FiberManualRecord,
+                        imageVector = if (isProUnlocked) Icons.Filled.FiberManualRecord else Icons.Filled.Lock,
                         contentDescription = stringResource(R.string.cd_record_toggle),
                         modifier = Modifier.size(20.dp),
                     )
                     Spacer(Modifier.width(8.dp))
                     Text(
-                        text = "Gravar vídeo",
+                        text = if (isProUnlocked) "Gravar vídeo" else "Gravar vídeo • Pro",
                         style = MaterialTheme.typography.titleSmall,
                         fontWeight = FontWeight.Bold,
                     )

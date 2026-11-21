@@ -1,11 +1,15 @@
 package com.example.viewmodel
 
+import android.app.Activity
 import android.app.Application
 import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.audio.AudioRouteMonitor
 import com.example.audio.TeleprompterTtsEngine
+import com.example.billing.PlayBillingManager
+import com.example.billing.ProAccessState
+import com.example.billing.ProPlanChoice
 import com.example.camera.CameraBindResult
 import com.example.camera.CameraRecorderController
 import com.example.data.LocalScriptRepository
@@ -107,6 +111,13 @@ class TeleprompterViewModel(application: Application) : AndroidViewModel(applica
     )
 
     val cameraController: CameraRecorderController = CameraRecorderController(application)
+    val billingManager: PlayBillingManager = PlayBillingManager(application)
+
+    val proAccessState: StateFlow<ProAccessState> = billingManager.state
+    private val _showProSheet = MutableStateFlow(false)
+    val showProSheet: StateFlow<Boolean> = _showProSheet.asStateFlow()
+    private val _proSheetFromRecord = MutableStateFlow(false)
+    val proSheetFromRecord: StateFlow<Boolean> = _proSheetFromRecord.asStateFlow()
 
     val ttsAvailability: StateFlow<TtsAvailability> = ttsEngine.availability
     val voices: StateFlow<List<VoiceOption>> = ttsEngine.voices
@@ -561,6 +572,35 @@ class TeleprompterViewModel(application: Application) : AndroidViewModel(applica
         _updateCheckState.value = UpdateCheckState.Idle
     }
 
+    // --- Escuta e Grava Pro & Trial Mode ---
+
+    fun openProSheet(fromRecordAttempt: Boolean = false) {
+        billingManager.clearStatusMessage()
+        _proSheetFromRecord.value = fromRecordAttempt
+        _showProSheet.value = true
+    }
+
+    fun dismissProSheet() {
+        _showProSheet.value = false
+        _proSheetFromRecord.value = false
+    }
+
+    fun launchProPurchase(activity: Activity, plan: ProPlanChoice) {
+        billingManager.launchPurchase(activity, plan)
+    }
+
+    fun restoreProPurchases() {
+        billingManager.refreshPurchases(showUserFeedback = true)
+    }
+
+    fun refreshProEntitlements() {
+        billingManager.refreshPurchases(showUserFeedback = false)
+    }
+
+    fun setDebugProOverride(enabled: Boolean) {
+        billingManager.setDebugProOverride(enabled)
+    }
+
     // --- Studio Overlay & Pro Camera Controls ---
 
     fun onCameraBound(result: CameraBindResult) {
@@ -817,6 +857,10 @@ class TeleprompterViewModel(application: Application) : AndroidViewModel(applica
 
     fun startRecordingSession(isShortTest: Boolean = false) {
         if (_recordingState.value.isSessionLocked) return
+        if (!proAccessState.value.isProUnlocked) {
+            openProSheet(fromRecordAttempt = true)
+            return
+        }
         if (!_studioState.value.cameraReady) {
             _recordingState.value = RecordingState.Error("Aguarde a câmera ficar pronta antes de gravar.")
             return
@@ -970,6 +1014,7 @@ class TeleprompterViewModel(application: Application) : AndroidViewModel(applica
         audioRouteMonitor.stop()
         ttsEngine.release()
         cameraController.release()
+        billingManager.release()
         super.onCleared()
     }
 }

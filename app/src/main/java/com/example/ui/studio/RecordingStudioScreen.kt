@@ -151,6 +151,8 @@ fun RecordingStudioScreen(
     onNextPhrase: () -> Unit,
     onReturnVolumeChange: (Float) -> Unit,
     onStepReturnVolume: (Float) -> Unit,
+    isProUnlocked: Boolean,
+    onOpenProUpgrade: () -> Unit,
     onStartRecording: (Boolean) -> Unit,
     onStopRecording: () -> Unit,
     onDismissAlerts: () -> Unit,
@@ -572,6 +574,24 @@ fun RecordingStudioScreen(
                             )
                         }
                     }
+                    if (!isProUnlocked && !recordingState.isSessionLocked) {
+                        Surface(
+                            onClick = onOpenProUpgrade,
+                            color = StudioTealOnDark.copy(alpha = 0.22f),
+                            shape = RoundedCornerShape(999.dp),
+                            border = BorderStroke(1.dp, StudioTealOnDark.copy(alpha = 0.65f)),
+                            modifier = Modifier.testTag("studio_trial_mode_pill"),
+                        ) {
+                            Text(
+                                text = "Modo Teste • Pro",
+                                fontFamily = JetBrainsMonoFamily,
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = StudioTealOnDark,
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
+                            )
+                        }
+                    }
                 }
 
                 StudioControls(
@@ -579,6 +599,7 @@ fun RecordingStudioScreen(
                     recordingState = recordingState,
                     cameraReady = studioState.cameraReady,
                     hasSentences = sentences.isNotEmpty(),
+                    isProUnlocked = isProUnlocked,
                     onPreviousPhrase = onPreviousPhrase,
                     onRepeatPhrase = onRepeatPhrase,
                     onPlayPauseReading = onPlayPauseReading,

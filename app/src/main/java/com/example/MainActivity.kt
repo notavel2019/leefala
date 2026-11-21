@@ -14,6 +14,7 @@ import androidx.activity.viewModels
 import androidx.compose.runtime.getValue
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.model.AppScreen
+import com.example.ui.pro.ProUpgradeSheet
 import com.example.ui.setup.ScriptSetupScreen
 import com.example.ui.studio.RecordingStudioScreen
 import com.example.ui.theme.EscutaEGravaTheme
@@ -47,6 +48,9 @@ class MainActivity : ComponentActivity() {
                 val cameraRebindVersion by viewModel.cameraRebindVersion.collectAsStateWithLifecycle()
                 val githubRepoSlug by viewModel.githubRepoSlug.collectAsStateWithLifecycle()
                 val updateCheckState by viewModel.updateCheckState.collectAsStateWithLifecycle()
+                val proAccessState by viewModel.proAccessState.collectAsStateWithLifecycle()
+                val showProSheet by viewModel.showProSheet.collectAsStateWithLifecycle()
+                val proSheetFromRecord by viewModel.proSheetFromRecord.collectAsStateWithLifecycle()
 
                 when (currentScreen) {
                     AppScreen.SETUP -> {
@@ -94,6 +98,8 @@ class MainActivity : ComponentActivity() {
                             onCheckGithubUpdate = viewModel::checkForGithubUpdate,
                             onResetUpdateState = viewModel::resetUpdateCheckState,
                             onOpenExternalUrl = ::openExternalUrl,
+                            proAccessState = proAccessState,
+                            onOpenProUpgrade = { viewModel.openProSheet(fromRecordAttempt = false) },
                         )
                     }
 
@@ -137,6 +143,8 @@ class MainActivity : ComponentActivity() {
                             onNextPhrase = viewModel::onStudioNextPhrase,
                             onReturnVolumeChange = viewModel::updateReturnVolume,
                             onStepReturnVolume = viewModel::stepReturnVolume,
+                            isProUnlocked = proAccessState.isProUnlocked,
+                            onOpenProUpgrade = { viewModel.openProSheet(fromRecordAttempt = false) },
                             onStartRecording = viewModel::startRecordingSession,
                             onStopRecording = viewModel::stopRecordingSession,
                             onDismissAlerts = viewModel::dismissStudioAlerts,
@@ -148,6 +156,19 @@ class MainActivity : ComponentActivity() {
                         )
                     }
                 }
+
+                if (showProSheet) {
+                    ProUpgradeSheet(
+                        proState = proAccessState,
+                        triggeredByRecordAttempt = proSheetFromRecord,
+                        onPurchasePlan = { plan ->
+                            viewModel.launchProPurchase(this@MainActivity, plan)
+                        },
+                        onRestorePurchases = viewModel::restoreProPurchases,
+                        onToggleDebugPro = viewModel::setDebugProOverride,
+                        onDismiss = viewModel::dismissProSheet,
+                    )
+                }
             }
         }
     }
@@ -155,6 +176,7 @@ class MainActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         viewModel.refreshTtsAndRoute()
+        viewModel.refreshProEntitlements()
     }
 
     override fun onPause() {

@@ -37,8 +37,10 @@ import androidx.compose.material.icons.filled.NoteAdd
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Save
 import androidx.compose.material.icons.filled.SystemUpdate
+import androidx.compose.material.icons.filled.Verified
 import androidx.compose.material.icons.filled.Videocam
 import androidx.compose.material.icons.filled.VolumeUp
+import androidx.compose.material.icons.filled.WorkspacePremium
 import androidx.compose.material.icons.outlined.EditNote
 import androidx.compose.material.icons.outlined.RecordVoiceOver
 import androidx.compose.material3.AlertDialog
@@ -77,7 +79,9 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.example.BuildConfig
 import com.example.R
+import com.example.billing.ProAccessState
 import com.example.model.AudioRouteInfo
 import com.example.model.AudioRouteKind
 import com.example.model.NarratorStyle
@@ -138,6 +142,8 @@ fun ScriptSetupScreen(
     onCheckGithubUpdate: () -> Unit,
     onResetUpdateState: () -> Unit,
     onOpenExternalUrl: (String) -> Unit,
+    proAccessState: ProAccessState,
+    onOpenProUpgrade: () -> Unit,
 ) {
     // 0 = Roteiro, 1 = Frases, 2 = Voz e Áudio
     var selectedTab by rememberSaveable { mutableIntStateOf(0) }
@@ -201,15 +207,17 @@ fun ScriptSetupScreen(
                             tint = MaterialTheme.colorScheme.primary,
                         )
                     }
-                    IconButton(
-                        onClick = { showUpdateSheet = true },
-                        modifier = Modifier.testTag("open_update_sheet_button"),
-                    ) {
-                        Icon(
-                            imageVector = Icons.Filled.SystemUpdate,
-                            contentDescription = "Atualizar pelo GitHub",
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
+                    if (BuildConfig.DEBUG) {
+                        IconButton(
+                            onClick = { showUpdateSheet = true },
+                            modifier = Modifier.testTag("open_update_sheet_button"),
+                        ) {
+                            Icon(
+                                imageVector = Icons.Filled.SystemUpdate,
+                                contentDescription = "Atualizar pelo GitHub (Debug)",
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
                     }
                     IconButton(
                         onClick = onCreateNewScript,
@@ -317,6 +325,14 @@ fun ScriptSetupScreen(
                 AudioRouteCompactStrip(
                     audioRoute = audioRoute,
                     onClick = { selectedTab = 2 },
+                )
+
+                Spacer(Modifier.height(8.dp))
+
+                // Compact Trial / Pro Status Strip
+                ProStatusCompactStrip(
+                    proAccessState = proAccessState,
+                    onClick = onOpenProUpgrade,
                 )
 
                 Spacer(Modifier.height(10.dp))
@@ -465,7 +481,7 @@ fun ScriptSetupScreen(
         }
     }
 
-    if (showUpdateSheet) {
+    if (BuildConfig.DEBUG && showUpdateSheet) {
         UpdateSheet(
             repoSlug = githubRepoSlug,
             updateState = updateCheckState,
@@ -613,6 +629,63 @@ private fun AudioRouteCompactStrip(
                 text = "Ajustar",
                 style = MaterialTheme.typography.labelMedium,
                 color = fg,
+                fontWeight = FontWeight.SemiBold,
+            )
+        }
+    }
+}
+
+@Composable
+private fun ProStatusCompactStrip(
+    proAccessState: ProAccessState,
+    onClick: () -> Unit,
+) {
+    val unlocked = proAccessState.isProUnlocked
+    Surface(
+        color = if (unlocked) {
+            MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.45f)
+        } else {
+            MaterialTheme.colorScheme.surface
+        },
+        shape = RoundedCornerShape(14.dp),
+        border = BorderStroke(
+            1.dp,
+            if (unlocked) MaterialTheme.colorScheme.primary.copy(alpha = 0.45f) else MaterialTheme.colorScheme.outline,
+        ),
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(14.dp))
+            .clickable(onClick = onClick)
+            .testTag("pro_status_strip"),
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 9.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            Icon(
+                imageVector = if (unlocked) Icons.Filled.Verified else Icons.Filled.WorkspacePremium,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(18.dp),
+            )
+            Text(
+                text = if (unlocked) {
+                    "${proAccessState.activePlanLabel ?: "Pro"} ativo • Gravação de vídeo liberada"
+                } else {
+                    "Modo Teste gratuito • Teste tudo e ative o Pro para gravar"
+                },
+                style = MaterialTheme.typography.bodySmall,
+                fontWeight = FontWeight.Medium,
+                color = MaterialTheme.colorScheme.onSurface,
+                modifier = Modifier.weight(1f),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Text(
+                text = if (unlocked) "Detalhes" else "Ver planos",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.primary,
                 fontWeight = FontWeight.SemiBold,
             )
         }
